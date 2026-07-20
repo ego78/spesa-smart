@@ -2,6 +2,7 @@ name: Cerca offerte automatiche
 
 on:
   workflow_dispatch:
+
   schedule:
     - cron: "15 5 * * *"
 
@@ -21,7 +22,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
 
       - name: Installa dipendenze
         run: npm install
@@ -32,6 +32,11 @@ jobs:
           FAMILY_CODE: ${{ secrets.FAMILY_CODE }}
           MINIMUM_MATCH_SCORE: "0.62"
         run: npm run scan-offers
+
+      - name: Mostra offerte trovate
+        run: |
+          echo "Contenuto di data/offerte.json:"
+          cat data/offerte.json
 
       - name: Salva offerte aggiornate
         run: |
