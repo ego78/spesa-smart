@@ -1,13 +1,42 @@
-name: Aggiorna offerte
+name: Cerca offerte automatiche
+
 on:
   workflow_dispatch:
   schedule:
-    - cron: '15 5 * * *'
+    - cron: "15 5 * * *"
+
 permissions:
   contents: write
+
 jobs:
-  update:
+  scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-      - run: echo 'Connettori automatici da aggiungere successivamente.'
+      - name: Scarica repository
+        uses: actions/checkout@v4
+
+      - name: Configura Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Installa dipendenze
+        run: npm install
+
+      - name: Cerca offerte Eurospin e PENNY
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          FAMILY_CODE: ${{ secrets.FAMILY_CODE }}
+          MINIMUM_MATCH_SCORE: "0.62"
+        run: npm run scan-offers
+
+      - name: Salva offerte aggiornate
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/offerte.json
+          git diff --cached --quiet || git commit -m "Aggiorna offerte automatiche"
+          git push
