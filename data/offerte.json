@@ -1,0 +1,4 @@
+[
+  {"product":"Latte intero","store":"Esempio supermercato","format":"1 L","price":1.19,"oldPrice":1.49,"validUntil":"31/12/2026"},
+  {"product":"Pasta","store":"Esempio supermercato","format":"500 g","price":0.79,"oldPrice":1.09,"validUntil":"31/12/2026"}
+]
