@@ -1,4 +1,4 @@
-Aimport * as cheerio from "cheerio";
+import * as cheerio from "cheerio";
 import { cleanText, parsePrice, uniqueOffers, fetchHtml } from "./common.mjs";
 
 const URL = "https://www.penny.it/categorie/tutte-le-offerte-99000000";
