@@ -1,0 +1,427 @@
+:root {
+  --primary: #157347;
+  --primary-dark: #0f5c39;
+  --primary-soft: #e9f6ef;
+  --background: #f4f7f5;
+  --surface: #ffffff;
+  --text: #18201c;
+  --muted: #6b756f;
+  --border: #dde5e0;
+  --danger: #b42318;
+  --shadow: 0 10px 30px rgba(24, 32, 28, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  padding-bottom: 92px;
+  background: var(--background);
+  color: var(--text);
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 20px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-header h1,
+.section-heading h2,
+.dialog-header h2 {
+  margin: 0;
+}
+
+.app-header h1 {
+  font-size: 1.75rem;
+}
+
+.eyebrow {
+  margin: 0 0 4px;
+  color: var(--primary);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.app-content {
+  width: min(100%, 760px);
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.summary-card {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding: 20px;
+  border-radius: 22px;
+  background: var(--primary);
+  color: white;
+  box-shadow: var(--shadow);
+}
+
+.summary-card > div {
+  min-width: 0;
+}
+
+.summary-label {
+  margin: 0 0 6px;
+  opacity: 0.82;
+  font-size: 0.9rem;
+}
+
+.summary-value {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 800;
+}
+
+.actions-section {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 18px 0 28px;
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 48px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  font-weight: 700;
+}
+
+.primary-button {
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: white;
+}
+
+.primary-button:hover {
+  background: var(--primary-dark);
+}
+
+.secondary-button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.secondary-button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.section {
+  margin-top: 30px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.section-heading h2 {
+  font-size: 1.25rem;
+}
+
+.products-list,
+.offers-list {
+  display: grid;
+  gap: 12px;
+}
+
+.empty-state {
+  padding: 34px 22px;
+  text-align: center;
+  border: 1px dashed #b8c7be;
+  border-radius: 20px;
+  background: var(--surface);
+}
+
+.empty-state.compact {
+  padding: 26px 20px;
+}
+
+.empty-state h3 {
+  margin: 10px 0 8px;
+}
+
+.empty-state p {
+  max-width: 470px;
+  margin: 0 auto 18px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.empty-icon {
+  font-size: 2rem;
+}
+
+.product-card,
+.offer-card {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 5px 18px rgba(24, 32, 28, 0.04);
+}
+
+.product-card-top,
+.offer-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.product-name,
+.offer-name {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+}
+
+.product-meta,
+.offer-meta {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.price-badge,
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-dark);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.text-button {
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.text-button.danger {
+  color: var(--danger);
+}
+
+.bottom-navigation {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  min-height: 72px;
+  padding-bottom: env(safe-area-inset-bottom);
+  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px solid var(--border);
+  backdrop-filter: blur(12px);
+}
+
+.nav-item {
+  display: grid;
+  place-content: center;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.nav-item span:first-child {
+  font-size: 1.25rem;
+}
+
+.nav-item.active {
+  color: var(--primary);
+  font-weight: 800;
+}
+
+.app-dialog {
+  width: min(calc(100% - 28px), 520px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.app-dialog::backdrop {
+  background: rgba(12, 20, 16, 0.58);
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-dialog .form-group,
+.dialog-actions,
+.form-message {
+  margin-right: 20px;
+  margin-left: 20px;
+}
+
+.form-group {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.form-group label {
+  font-weight: 700;
+}
+
+.form-group input {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: white;
+  color: var(--text);
+}
+
+.form-group input:focus {
+  border-color: var(--primary);
+  outline: 3px solid rgba(21, 115, 71, 0.14);
+}
+
+.price-input {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: white;
+}
+
+.price-input span {
+  padding-left: 14px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.price-input input {
+  border: 0;
+}
+
+.price-input:focus-within {
+  border-color: var(--primary);
+  outline: 3px solid rgba(21, 115, 71, 0.14);
+}
+
+.price-input input:focus {
+  outline: 0;
+}
+
+.dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.form-message {
+  min-height: 24px;
+  margin-top: 10px;
+  margin-bottom: 18px;
+  color: var(--danger);
+  text-align: center;
+}
+
+@media (max-width: 560px) {
+  .app-content {
+    padding: 16px;
+  }
+
+  .actions-section {
+    grid-template-columns: 1fr;
+  }
+
+  .summary-card {
+    padding: 18px;
+  }
+
+  .summary-value {
+    font-size: 1.7rem;
+  }
+
+  .product-card-top,
+  .offer-card-top {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .price-badge,
+  .status-badge {
+    align-self: flex-start;
+  }
+}
