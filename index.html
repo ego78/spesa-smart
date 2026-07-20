@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover"
+  >
+
+  <meta
+    name="description"
+    content="Spesa Smart trova le offerte sui prodotti che acquisti più spesso."
+  >
+
+  <meta name="theme-color" content="#157347">
+
+  <title>Spesa Smart</title>
+
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.webmanifest">
+</head>
+
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">La spesa della famiglia</p>
+      <h1>Spesa Smart</h1>
+    </div>
+
+    <button
+      id="settingsButton"
+      class="icon-button"
+      type="button"
+      aria-label="Apri impostazioni"
+    >
+      ⚙️
+    </button>
+  </header>
+
+  <main class="app-content">
+
+    <section class="summary-card">
+      <div>
+        <p class="summary-label">Offerte trovate</p>
+        <p id="offersCount" class="summary-value">0</p>
+      </div>
+
+      <div>
+        <p class="summary-label">Prodotti controllati</p>
+        <p id="productsCount" class="summary-value">0</p>
+      </div>
+    </section>
+
+    <section class="actions-section">
+      <button id="addProductButton" class="primary-button" type="button">
+        ＋ Aggiungi prodotto
+      </button>
+
+      <button id="refreshButton" class="secondary-button" type="button">
+        Aggiorna elenco
+      </button>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">I tuoi alimenti</p>
+          <h2>Prodotti monitorati</h2>
+        </div>
+      </div>
+
+      <div id="productsList" class="products-list">
+        <div class="empty-state">
+          <div class="empty-icon">🛒</div>
+
+          <h3>Nessun prodotto inserito</h3>
+
+          <p>
+            Aggiungi gli alimenti che comprate più spesso.
+            L’app controllerà periodicamente le offerte disponibili.
+          </p>
+
+          <button
+            id="emptyAddButton"
+            class="primary-button"
+            type="button"
+          >
+            Aggiungi il primo prodotto
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Promozioni</p>
+          <h2>Offerte recenti</h2>
+        </div>
+      </div>
+
+      <div id="offersList" class="offers-list">
+        <div class="empty-state compact">
+          <div class="empty-icon">🏷️</div>
+
+          <h3>Nessuna offerta trovata</h3>
+
+          <p>
+            Le offerte compariranno qui dopo la prima scansione automatica.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <nav class="bottom-navigation" aria-label="Navigazione principale">
+    <button class="nav-item active" type="button">
+      <span>🏠</span>
+      <span>Home</span>
+    </button>
+
+    <button id="navAddButton" class="nav-item" type="button">
+      <span>➕</span>
+      <span>Aggiungi</span>
+    </button>
+
+    <button class="nav-item" type="button">
+      <span>🏷️</span>
+      <span>Offerte</span>
+    </button>
+  </nav>
+
+  <dialog id="productDialog" class="app-dialog">
+    <div class="dialog-header">
+      <div>
+        <p class="eyebrow">Nuovo alimento</p>
+        <h2>Aggiungi prodotto</h2>
+      </div>
+
+      <button
+        id="closeProductDialog"
+        class="icon-button"
+        type="button"
+        aria-label="Chiudi"
+      >
+        ✕
+      </button>
+    </div>
+
+    <div class="form-group">
+      <label for="productName">Nome del prodotto *</label>
+      <input
+        id="productName"
+        name="productName"
+        type="text"
+        placeholder="Esempio: latte intero"
+        autocomplete="off"
+      >
+    </div>
+
+    <div class="form-group">
+      <label for="productBrand">Marca</label>
+      <input
+        id="productBrand"
+        name="productBrand"
+        type="text"
+        placeholder="Qualsiasi oppure Parmalat"
+        autocomplete="off"
+      >
+    </div>
+
+    <div class="form-group">
+      <label for="productFormat">Formato</label>
+      <input
+        id="productFormat"
+        name="productFormat"
+        type="text"
+        placeholder="Esempio: 1 litro"
+        autocomplete="off"
+      >
+    </div>
+
+    <div class="form-group">
+      <label for="maximumPrice">Prezzo massimo desiderato</label>
+
+      <div class="price-input">
+        <span>€</span>
+
+        <input
+          id="maximumPrice"
+          name="maximumPrice"
+          type="number"
+          min="0"
+          step="0.01"
+          placeholder="0,00"
+        >
+      </div>
+    </div>
+
+    <div class="dialog-actions">
+      <button
+        id="cancelProductButton"
+        class="secondary-button"
+        type="button"
+      >
+        Annulla
+      </button>
+
+      <button
+        id="saveProductButton"
+        class="primary-button"
+        type="button"
+      >
+        Salva prodotto
+      </button>
+    </div>
+
+    <p id="formMessage" class="form-message" aria-live="polite"></p>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
