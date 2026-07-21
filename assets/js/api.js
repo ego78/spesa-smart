@@ -1,0 +1,6 @@
+import{family}from'./storage.js';
+function cfg(s){const scriptUrl=String(s.scriptUrl||'').trim(),familyCode=family(s.familyCode);if(!scriptUrl)throw Error('Inserisci URL Apps Script.');if(!familyCode)throw Error('Inserisci il codice famiglia.');return{scriptUrl,familyCode}}
+async function parse(r){if(!r.ok)throw Error('Errore HTTP '+r.status);const d=await r.json();if(d.ok===false)throw Error(d.error||'Operazione non riuscita');return d}
+export async function listRemote(s){const{scriptUrl,familyCode}=cfg(s),u=new URL(scriptUrl);u.searchParams.set('action','listProducts');u.searchParams.set('familyCode',familyCode);u.searchParams.set('_',Date.now());return (await parse(await fetch(u,{cache:'no-store'}))).products||[]}
+export async function upsertRemote(s,product){const{scriptUrl,familyCode}=cfg(s);return parse(await fetch(scriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'upsertProduct',familyCode,product})}))}
+export async function deleteRemote(s,productId){const{scriptUrl,familyCode}=cfg(s);return parse(await fetch(scriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'deleteProduct',familyCode,productId})}))}
