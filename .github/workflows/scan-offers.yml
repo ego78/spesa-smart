@@ -34,15 +34,16 @@ jobs:
           PENNY_FLYER_ID: ${{ secrets.PENNY_FLYER_ID }}
         run: npm run scan-offers
 
-      - name: Mostra offerte trovate
+      - name: Riepilogo offerte trovate
         run: |
-          echo "Contenuto di data/offerte.json:"
-          cat data/offerte.json
+          node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync('data/offerte.json'));const g=Object.groupBy(a,x=>x.store||x.chain||'Altro');console.log('Totale:',a.length);for(const [k,v] of Object.entries(g))console.log(k+':',v.length,'- locali verificati:',v.filter(x=>x.localValidityVerified).length);"
+          echo "Stato collegamenti locali:"
+          cat data/volantini-locali.json
 
       - name: Salva offerte aggiornate
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/offerte.json
+          git add data/offerte.json data/volantini-locali.json
           git diff --cached --quiet || git commit -m "Aggiorna offerte automatiche"
           git push
