@@ -16,10 +16,10 @@ jobs:
 
     steps:
       - name: Scarica repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Configura Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
           node-version: "20"
 
