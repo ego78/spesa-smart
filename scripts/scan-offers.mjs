@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { scanEurospin } from '../connectors/eurospin.mjs';
 import { scanPenny } from '../connectors/penny.mjs';
+import { scanPennyLocal } from '../connectors/penny-local.mjs';
 import { scanFlyerPdf } from '../connectors/flyer-ai.mjs';
 import { chainFor } from '../connectors/registry.mjs';
 import { uniqueOffers } from '../connectors/common.mjs';
@@ -23,14 +24,20 @@ async function safe(name,fn){try{const out=await fn();console.log(`${name}: ${ou
 
 const stores=await loadSelectedStores();
 console.log(`Punti vendita selezionati: ${stores.length}`);
-const localJobs=stores.filter(s=>String(s.flyerUrl||'').trim()).map(store=>safe(`Volantino locale ${store.name||store.brand}`,()=>scanFlyerPdf(store,String(store.flyerUrl).trim())));
-const localResults=(await Promise.all(localJobs)).flat();
+const pennyStores=stores.filter(s=>chainFor(s.brand||s.name)?.id==='penny');
+const pennyJobs=pennyStores.map(store=>safe(`PENNY locale ${store.name||store.brand}`,()=>scanPennyLocal(store)));
+
+const pdfJobs=stores
+  .filter(s=>chainFor(s.brand||s.name)?.id!=='penny'&&String(s.flyerUrl||'').trim())
+  .map(store=>safe(`Volantino locale ${store.name||store.brand}`,()=>scanFlyerPdf(store,String(store.flyerUrl).trim())));
+
+const localResults=(await Promise.all([...pennyJobs,...pdfJobs])).flat();
 const verifiedStoreIds=new Set(localResults.map(o=>o.flyerStoreId).filter(Boolean));
 
 const chains=[...new Set(stores.map(s=>chainFor(s.brand||s.name)?.id).filter(Boolean))];
 const fallbackJobs=[];
-if(chains.includes('penny')&&!stores.some(s=>chainFor(s.brand||s.name)?.id==='penny'&&verifiedStoreIds.has(s.id)))fallbackJobs.push(safe('PENNY generale',scanPenny));
-if(chains.includes('eurospin')&&!stores.some(s=>chainFor(s.brand||s.name)?.id==='eurospin'&&verifiedStoreIds.has(s.id)))fallbackJobs.push(safe('Eurospin generale',scanEurospin));
+if(chains.includes('penny')&&pennyStores.length&&!pennyStores.some(s=>verifiedStoreIds.has(String(s.id))))fallbackJobs.push(safe('PENNY generale di riserva',scanPenny));
+if(chains.includes('eurospin')&&!stores.some(s=>chainFor(s.brand||s.name)?.id==='eurospin'&&verifiedStoreIds.has(String(s.id))))fallbackJobs.push(safe('Eurospin generale',scanEurospin));
 const fallback=attachFallback((await Promise.all(fallbackJobs)).flat(),stores);
 
 const offers=uniqueOffers([...localResults,...fallback]).sort((a,b)=>String(a.store).localeCompare(String(b.store),'it')||String(a.product).localeCompare(String(b.product),'it'));
