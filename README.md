@@ -1,3 +1,7 @@
+## Versione 3.0.2
+
+Corretto il caricamento del connettore PENNY locale: aggiunta la funzione `numberValue` usata per convertire i prezzi.
+
 # Spesa Smart
 
 Web app pronta per GitHub Pages.
