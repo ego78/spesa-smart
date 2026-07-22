@@ -10,6 +10,13 @@ export function parsePrice(value = "") {
   return match ? Number(match[1].replace(",", ".")) : null;
 }
 
+
+export function numberValue(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  return parsePrice(value);
+}
+
 export function normalizeProduct(value = "") {
   return cleanText(value)
     .toLowerCase()
