@@ -26,7 +26,7 @@ jobs:
       - name: Installa dipendenze
         run: npm install
 
-      - name: Cerca offerte Eurospin e PENNY
+      - name: Cerca offerte dei supermercati selezionati
         env:
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
           FAMILY_CODE: ${{ secrets.FAMILY_CODE }}
