@@ -1,153 +1,40 @@
-import fs from "node:fs/promises";
-import { search } from "fast-fuzzy";
-import { scanEurospin } from "../connectors/eurospin.mjs";
-import { scanPenny } from "../connectors/penny.mjs";
-import { normalizeProduct, uniqueOffers } from "../connectors/common.mjs";
+import fs from 'node:fs/promises';
+import { scanEurospin } from '../connectors/eurospin.mjs';
+import { scanPenny } from '../connectors/penny.mjs';
+import { scanFlyerPdf } from '../connectors/flyer-ai.mjs';
+import { chainFor } from '../connectors/registry.mjs';
+import { uniqueOffers } from '../connectors/common.mjs';
 
-const OUTPUT = new URL("../data/offerte.json", import.meta.url);
-const appsScriptUrl = process.env.APPS_SCRIPT_URL || "";
-const familyCode = process.env.FAMILY_CODE || "default";
-const minimumScore = Number(process.env.MINIMUM_MATCH_SCORE || "0.62");
+const OUTPUT=new URL('../data/offerte.json',import.meta.url);
+const appsScriptUrl=process.env.APPS_SCRIPT_URL||'';
+const familyCode=process.env.FAMILY_CODE||'default';
 
-async function loadRemote(action, fallback = []) {
-  if (!appsScriptUrl) return fallback;
-  const url = new URL(appsScriptUrl);
-  url.searchParams.set("action", action);
-  url.searchParams.set("familyCode", familyCode);
-  url.searchParams.set("_", Date.now());
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`Google Apps Script: HTTP ${response.status}`);
-  const data = await response.json();
-  if (!data.ok) throw new Error(data.error || `Errore ${action}`);
-  return data;
+async function loadRemote(action){
+ if(!appsScriptUrl)return{};
+ const url=new URL(appsScriptUrl);url.searchParams.set('action',action);url.searchParams.set('familyCode',familyCode);url.searchParams.set('_',Date.now());
+ const response=await fetch(url,{cache:'no-store'});if(!response.ok)throw new Error(`Google Apps Script HTTP ${response.status}`);
+ const data=await response.json();if(!data.ok)throw new Error(data.error||`Errore ${action}`);return data;
 }
+async function loadSelectedStores(){const data=await loadRemote('listSupermarkets');return(Array.isArray(data.supermarkets)?data.supermarkets:[]).filter(s=>s&&s.selected===true)}
+function norm(v){return String(v||'').trim().toUpperCase()}
+function locationsFor(offer,stores){const chain=norm(offer.store||offer.chain);return stores.filter(s=>{const c=chainFor(s.brand||s.name);return c&&c.aliases.some(a=>chain.includes(a))}).map(s=>({id:s.id||'',name:s.name||s.brand||'',brand:s.brand||s.name||'',address:s.address||'',distance:Number.isFinite(Number(s.distance))?Number(s.distance):null,lat:Number.isFinite(Number(s.lat))?Number(s.lat):null,lon:Number.isFinite(Number(s.lon))?Number(s.lon):null})).sort((a,b)=>(a.distance??9999)-(b.distance??9999))}
+function attachFallback(offers,stores){return offers.map(o=>{if(o.localValidityVerified)return o;const locations=locationsFor(o,stores);return{...o,locations,nearestStore:locations[0]||null,offerScope:locations.length?'selected-chain':'national-chain',localValidityVerified:false}})}
+async function safe(name,fn){try{const out=await fn();console.log(`${name}: ${out.length} offerte`);return out}catch(e){console.error(`${name}: ${e.message}`);return[]}}
 
-async function loadProducts() {
-  if (!appsScriptUrl) {
-    console.warn("APPS_SCRIPT_URL non configurato: nessun prodotto remoto da filtrare.");
-    return [];
-  }
-  const data = await loadRemote("listProducts", {});
-  return Array.isArray(data.products) ? data.products : [];
-}
+const stores=await loadSelectedStores();
+console.log(`Punti vendita selezionati: ${stores.length}`);
+const localJobs=stores.filter(s=>String(s.flyerUrl||'').trim()).map(store=>safe(`Volantino locale ${store.name||store.brand}`,()=>scanFlyerPdf(store,String(store.flyerUrl).trim())));
+const localResults=(await Promise.all(localJobs)).flat();
+const verifiedStoreIds=new Set(localResults.map(o=>o.flyerStoreId).filter(Boolean));
 
-async function loadSelectedStores() {
-  if (!appsScriptUrl) return [];
-  const data = await loadRemote("listSupermarkets", {});
-  const stores = Array.isArray(data.supermarkets) ? data.supermarkets : [];
-  return stores.filter(store => store && store.selected === true);
-}
+const chains=[...new Set(stores.map(s=>chainFor(s.brand||s.name)?.id).filter(Boolean))];
+const fallbackJobs=[];
+if(chains.includes('penny')&&!stores.some(s=>chainFor(s.brand||s.name)?.id==='penny'&&verifiedStoreIds.has(s.id)))fallbackJobs.push(safe('PENNY generale',scanPenny));
+if(chains.includes('eurospin')&&!stores.some(s=>chainFor(s.brand||s.name)?.id==='eurospin'&&verifiedStoreIds.has(s.id)))fallbackJobs.push(safe('Eurospin generale',scanEurospin));
+const fallback=attachFallback((await Promise.all(fallbackJobs)).flat(),stores);
 
-function normalizedChain(store) {
-  return String(store?.brand || store?.name || "").trim().toUpperCase();
-}
-
-function selectedChainsFrom(stores) {
-  return [...new Set(stores.map(normalizedChain).filter(Boolean))];
-}
-
-function locationsForOffer(offer, selectedStores) {
-  const offerChain = String(offer.store || offer.chain || "").toUpperCase();
-  return selectedStores
-    .filter(store => {
-      const chain = normalizedChain(store);
-      return chain && (offerChain.includes(chain) || chain.includes(offerChain));
-    })
-    .map(store => ({
-      id: store.id || "",
-      name: store.name || store.brand || offer.store || "",
-      brand: store.brand || store.name || offer.store || "",
-      address: store.address || "",
-      distance: Number.isFinite(Number(store.distance)) ? Number(store.distance) : null,
-      lat: Number.isFinite(Number(store.lat)) ? Number(store.lat) : null,
-      lon: Number.isFinite(Number(store.lon)) ? Number(store.lon) : null
-    }))
-    .sort((a, b) => (a.distance ?? 9999) - (b.distance ?? 9999));
-}
-
-function attachSelectedLocations(offers, selectedStores) {
-  return offers.map(offer => {
-    const locations = locationsForOffer(offer, selectedStores);
-    return {
-      ...offer,
-      locations,
-      nearestStore: locations[0] || null,
-      offerScope: locations.length ? "selected-chain" : "national-chain",
-      localValidityVerified: false
-    };
-  });
-}
-
-function matchesWantedProduct(offer, products) {
-  if (!products.length) return true;
-
-  const offerText = normalizeProduct(
-    [offer.product, offer.brand, offer.format].filter(Boolean).join(" ")
-  );
-
-  return products.some(product => {
-    const wanted = normalizeProduct(
-      [product.name, product.brand, product.format].filter(Boolean).join(" ")
-    );
-
-    if (!wanted) return false;
-    if (offerText.includes(wanted) || wanted.includes(offerText)) return true;
-
-    const result = search(wanted, [offerText], {
-      returnMatchData: true,
-      threshold: minimumScore
-    });
-
-    return result.length > 0;
-  });
-}
-
-async function safeScan(name, scanner) {
-  try {
-    const offers = await scanner();
-    console.log(`${name}: ${offers.length} offerte lette`);
-    return offers;
-  } catch (error) {
-    console.error(`${name}:`, error.message);
-    return [];
-  }
-}
-
-const [products, selectedStores] = await Promise.all([
-  loadProducts(),
-  loadSelectedStores()
-]);
-const selectedChains = selectedChainsFrom(selectedStores);
-console.log(`Prodotti monitorati: ${products.length}`);
-console.log(`Punti vendita selezionati: ${selectedStores.length}`);
-console.log(`Catene selezionate: ${selectedChains.length ? selectedChains.join(", ") : "nessun filtro"}`);
-
-const scanners = [
-  { name: "Eurospin", aliases: ["EUROSPIN"], scan: scanEurospin },
-  { name: "PENNY", aliases: ["PENNY"], scan: scanPenny }
-];
-
-const enabledScanners = selectedChains.length
-  ? scanners.filter(item => item.aliases.some(alias => selectedChains.some(chain => chain.includes(alias))))
-  : scanners;
-
-const results = await Promise.all(
-  enabledScanners.map(item => safeScan(item.name, item.scan))
-);
-
-const allOffers = attachSelectedLocations(uniqueOffers(results.flat()), selectedStores);
-
-const matchedOffers = [...allOffers]
-  .sort((a, b) =>
-    a.store.localeCompare(b.store, "it") ||
-    a.product.localeCompare(b.product, "it")
-  );
-
-await fs.writeFile(
-  OUTPUT,
-  JSON.stringify(matchedOffers, null, 2) + "\n",
-  "utf8"
-);
-
-console.log(`Offerte totali: ${allOffers.length}`);
-console.log(`Offerte corrispondenti: ${matchedOffers.length}`);
+const offers=uniqueOffers([...localResults,...fallback]).sort((a,b)=>String(a.store).localeCompare(String(b.store),'it')||String(a.product).localeCompare(String(b.product),'it'));
+await fs.writeFile(OUTPUT,JSON.stringify(offers,null,2)+'\n','utf8');
+console.log(`Offerte locali verificate: ${offers.filter(o=>o.localValidityVerified).length}`);
+console.log(`Offerte generali/non verificate: ${offers.filter(o=>!o.localValidityVerified).length}`);
+console.log(`Totale offerte: ${offers.length}`);
