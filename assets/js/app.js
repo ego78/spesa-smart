@@ -1,29 +1,346 @@
-import{PK,SK,read,write,family}from'./storage.js';
-import{$,esc,money,uid}from'./utils.js';
-import{listRemote,upsertRemote,deleteRemote}from'./api.js';
-import{loadOffers,relevant}from'./offers.js';
-import{openProduct,productFromForm}from'./forms.js';
-import{nearbyStores,loadStores,persistStores,mapsUrl}from'./supermarkets.js';
-let products=read(PK,[]),settings=read(SK,{}),offers=[],stores=[],foundStores=[],timer,activeStoreFilter="";
-const configured=()=>!!(String(settings.scriptUrl||'').trim()&&family(settings.familyCode));
-function status(t='',c=''){$('syncStatus').textContent=t;$('syncStatus').className='sync-status '+c}
-function saveLocal(){write(PK,products)}
-async function syncProducts(silent=false){if(!configured()){if(!silent)status('Configura codice famiglia e URL Apps Script per sincronizzare i dispositivi.');return}if(!silent)status('Sincronizzazione prodotti…');try{products=await listRemote(settings);saveLocal();render();if(!silent)status('Prodotti sincronizzati: '+products.length,'success')}catch(e){console.warn(e);if(!silent)status('Sincronizzazione non riuscita: '+e.message,'error')}}
-async function saveProduct(){let p;try{p=productFromForm()}catch(e){$('formMsg').textContent=e.message;return}if(products.some(x=>x.id!==p.id&&String(x.name).toLowerCase()===p.name.toLowerCase())){$('formMsg').textContent='Prodotto già presente.';return}const old=[...products],exists=products.some(x=>x.id===p.id);products=exists?products.map(x=>x.id===p.id?p:x):[p,...products];saveLocal();render();if(!configured()){$('productDialog').close();status('Salvato solo su questo dispositivo.');return}$('saveProduct').disabled=true;$('formMsg').textContent='Salvataggio…';try{await upsertRemote(settings,p);$('productDialog').close();await syncProducts(true);status('Prodotto salvato e sincronizzato.','success')}catch(e){products=old;saveLocal();render();$('formMsg').textContent=e.message}finally{$('saveProduct').disabled=false}}
-async function del(id){const p=products.find(x=>x.id===id);if(!p||!confirm('Eliminare "'+p.name+'"?'))return;const old=[...products];products=products.filter(x=>x.id!==id);saveLocal();render();if(!configured()){status('Eliminato solo da questo dispositivo.');return}try{await deleteRemote(settings,id);await syncProducts(true);status('Prodotto eliminato e sincronizzato.','success')}catch(e){products=old;saveLocal();render();status(e.message,'error')}}
-async function duplicate(id){const p=products.find(x=>x.id===id);if(!p)return;const copy={...p,id:uid(),name:p.name+' copia',updatedAt:new Date().toISOString()};products=[copy,...products];saveLocal();render();if(configured())try{await upsertRemote(settings,copy);await syncProducts(true);status('Copia sincronizzata.','success')}catch(e){products=products.filter(x=>x.id!==copy.id);saveLocal();render();status(e.message,'error')}}
-function selectedStoreOffers(list){const selected=stores.filter(s=>s.selected);if(!selected.length)return list;return list.filter(o=>selected.some(s=>{const hay=String((o.store||'')+' '+(o.chain||'')).toUpperCase(),brand=String(s.brand||s.name||'').toUpperCase();return brand&&hay.includes(brand)}))}
-function offersForStore(store){const brand=String(store?.brand||store?.name||'').toUpperCase();return offers.filter(o=>{const hay=String((o.store||'')+' '+(o.chain||'')).toUpperCase();const ids=[o.nearestStore?.id,...(o.locations||[]).map(x=>x.id)].filter(Boolean);return ids.includes(store.id)||(brand&&hay.includes(brand))})}
-function renderStores(){const selected=stores.filter(s=>s.selected).sort((a,b)=>(a.distance??999)-(b.distance??999));$('selectedStores').innerHTML=selected.length?selected.map(s=>{const count=offersForStore(s).length;return`<article class="card"><div class="top"><div><h3 class="name">${esc(s.name||s.brand)}</h3><p class="meta">${esc(s.address||'Indirizzo non disponibile')}${Number.isFinite(Number(s.distance))?' · '+esc(s.distance)+' km':''}</p><span class="badge">${count} offerte</span></div><div class="store-actions"><button class="textbtn" data-store-offers="${esc(s.id)}">Vedi offerte</button><a class="textbtn" target="_blank" rel="noopener" href="${mapsUrl(s)}">Mappa</a></div></div></article>`}).join(''):`<div class="empty"><div style="font-size:2rem">🏪</div><h3>Nessun supermercato scelto</h3><p>Trova i negozi vicini e seleziona quelli che frequenti.</p><button id="emptyStores" class="btn primary">Scegli i supermercati</button></div>`;$('emptyStores')?.addEventListener('click',openStores);document.querySelectorAll('[data-store-offers]').forEach(b=>b.onclick=()=>{activeStoreFilter=b.dataset.storeOffers;render();$('offersSection').scrollIntoView({behavior:'smooth'})})}
-function renderFoundStores(){const chosen=new Set(stores.filter(s=>s.selected).map(s=>s.id));$('storesResults').innerHTML=foundStores.length?foundStores.map(s=>`<label class="store-option"><input type="checkbox" data-store-id="${esc(s.id)}" ${chosen.has(s.id)||s.selected?'checked':''}><span><strong>${esc(s.name||s.brand)}</strong><small>${esc(s.address||'Indirizzo non disponibile')}</small></span><span class="store-distance">${esc(s.distance)} km</span></label>`).join(''):'<div class="empty"><p>Premi “Trova supermercati vicini”.</p></div>'}
-function openStores(){$('storesMsg').textContent='';$('storeRadius').value=String(settings.storeRadius||20);foundStores=stores.length?[...stores]:[];renderFoundStores();$('storesDialog').showModal()}
-async function findNearby(){if(!navigator.geolocation){$('storesMsg').textContent='Il GPS non è supportato da questo dispositivo.';return}const b=$('findStores');b.disabled=true;b.textContent='Ricerca…';$('storesMsg').textContent='Autorizza la posizione quando richiesto.';navigator.geolocation.getCurrentPosition(async pos=>{try{const radius=Number($('storeRadius').value)||20;foundStores=await nearbyStores(pos.coords.latitude,pos.coords.longitude,radius);const old=new Map(stores.map(s=>[s.id,s]));foundStores=foundStores.map(s=>({...s,selected:old.get(s.id)?.selected||false}));renderFoundStores();$('storesMsg').style.color='var(--p)';$('storesMsg').textContent='Trovati '+foundStores.length+' supermercati.'}catch(e){$('storesMsg').style.color='var(--d)';$('storesMsg').textContent=e.message}finally{b.disabled=false;b.textContent='📍 Trova supermercati vicini'}},e=>{b.disabled=false;b.textContent='📍 Trova supermercati vicini';$('storesMsg').textContent=e.code===1?'Permesso posizione negato. Abilitalo nelle impostazioni del browser.':'Posizione non disponibile.'},{enableHighAccuracy:false,timeout:15000,maximumAge:300000})}
-async function saveStoreSelection(){const checked=new Set([...document.querySelectorAll('[data-store-id]:checked')].map(x=>x.dataset.storeId));stores=foundStores.map(s=>({...s,selected:checked.has(s.id)}));settings.storeRadius=Number($('storeRadius').value)||20;write(SK,settings);$('saveStores').disabled=true;$('storesMsg').textContent='Salvataggio…';try{await persistStores(settings,stores);render();$('storesMsg').style.color='var(--p)';$('storesMsg').textContent='Supermercati salvati.';setTimeout(()=>$('storesDialog').close(),500)}catch(e){$('storesMsg').style.color='var(--d)';$('storesMsg').textContent=e.message}finally{$('saveStores').disabled=false}}
-function render(){const cats=[...new Set(products.map(p=>p.category).filter(Boolean))].sort(),cur=$('filter').value;$('filter').innerHTML='<option value="">Tutte le categorie</option>'+cats.map(c=>`<option>${esc(c)}</option>`).join('');$('filter').value=cats.includes(cur)?cur:'';const q=$('search').value.toLowerCase(),cat=$('filter').value,list=products.filter(p=>(!q||[p.name,p.brand,p.format,p.category].join(' ').toLowerCase().includes(q))&&(!cat||p.category===cat)).sort((a,b)=>Number(!!b.favorite)-Number(!!a.favorite)||String(a.name).localeCompare(String(b.name),'it'));
-$('products').innerHTML=list.length?list.map(p=>`<article class="card"><div class="top"><div><h3 class="name">${esc(p.name)} ${p.favorite?'⭐':''}</h3><p class="meta">${[p.brand,p.format,p.category].filter(Boolean).map(esc).join(' · ')}</p></div><span class="badge">${p.maximumPrice?'Sotto '+money(p.maximumPrice):'Monitorato'}</span></div><div class="cardactions"><button class="textbtn" data-a="duplicate" data-id="${esc(p.id)}">Duplica</button><button class="textbtn" data-a="edit" data-id="${esc(p.id)}">Modifica</button><button class="textbtn danger" data-a="delete" data-id="${esc(p.id)}">Elimina</button></div></article>`).join(''):`<div class="empty"><div style="font-size:2rem">🛒</div><h3>Nessun prodotto inserito</h3><p>Aggiungi gli alimenti e i prodotti che comprate più spesso.</p><button id="emptyAdd" class="btn primary">Aggiungi il primo prodotto</button></div>`;
-$('emptyAdd')?.addEventListener('click',()=>openProduct());document.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>b.dataset.a==='edit'?openProduct(products.find(p=>p.id===b.dataset.id)):b.dataset.a==='delete'?del(b.dataset.id):duplicate(b.dataset.id));renderStores();const selectedOffers=selectedStoreOffers(offers),filterStore=stores.find(s=>s.id===activeStoreFilter),filteredOffers=filterStore?selectedOffers.filter(o=>{const ids=[o.nearestStore?.id,...(o.locations||[]).map(x=>x.id)].filter(Boolean);const hay=String((o.store||'')+' '+(o.chain||'')).toUpperCase();const brand=String(filterStore.brand||filterStore.name||'').toUpperCase();return ids.includes(activeStoreFilter)||(brand&&hay.includes(brand))}):selectedOffers,ro=relevant(products,filteredOffers);$('offersFilterLabel').textContent=filterStore?'Solo '+(filterStore.name||filterStore.brand):'';$('clearStoreFilter').hidden=!filterStore;$('offers').innerHTML=ro.length?ro.map(o=>{const n=o.nearestStore||o.locations?.[0];const place=n?[n.name||n.brand,n.address].filter(Boolean).join(' · ')+(Number.isFinite(Number(n.distance))?' · '+n.distance+' km':''):'';const scope=o.localValidityVerified?'Validità locale verificata':place?'Associata al negozio scelto · validità locale da verificare':'Offerta della catena';return`<article class="card"><div class="top"><div><h3 class="name">${esc(o.product)}</h3><p class="meta">${esc(o.store)}${o.format?' · '+esc(o.format):''}${place?'<br>'+esc(place):''}<br>${esc(scope)}<br>Valida fino al ${esc(o.validUntil||'dato non disponibile')}</p></div><div><div class="price">${money(o.price)}</div>${o.oldPrice?`<div class="old">${money(o.oldPrice)}</div>`:''}</div></div></article>`}).join(''):`<div class="empty"><div style="font-size:2rem">🏷️</div><h3>Nessuna offerta trovata</h3><p>Le offerte appariranno qui quando data/offerte.json verrà aggiornato.</p></div>`;$('productsCount').textContent=products.length;$('offersCount').textContent=ro.length;$('familyStatus').textContent=family(settings.familyCode)?'Famiglia: '+family(settings.familyCode)+' · '+stores.filter(s=>s.selected).length+' supermercati':'Codice famiglia non configurato'}
-async function refreshOffers(){const b=$('refreshBtn');b.disabled=true;b.textContent='Aggiornamento…';try{offers=await loadOffers()}catch{offers=[]}render();b.disabled=false;b.textContent='Aggiorna offerte'}
-function openSettings(){$('familyCode').value=settings.familyCode||'';$('city').value=settings.city||'';$('scriptUrl').value=settings.scriptUrl||'';$('settingsMsg').textContent='';$('settingsDialog').showModal()}
-async function saveSettings(){const old=family(settings.familyCode);settings={familyCode:family($('familyCode').value),city:$('city').value.trim(),scriptUrl:$('scriptUrl').value.trim()};write(SK,settings);if(family(settings.familyCode)!==old){products=[];saveLocal();render()}$('settingsMsg').style.color='var(--p)';$('settingsMsg').textContent='Impostazioni salvate.';await syncProducts();setTimeout(()=>$('settingsDialog').close(),500)}
-function bind(){$('addBtn').onclick=$('navAdd').onclick=()=>openProduct();$('closeProduct').onclick=$('cancelProduct').onclick=()=>$('productDialog').close();$('saveProduct').onclick=saveProduct;$('name').onkeydown=e=>{if(e.key==='Enter')saveProduct()};$('search').oninput=render;$('filter').onchange=render;$('refreshBtn').onclick=refreshOffers;$('clearStoreFilter').onclick=()=>{activeStoreFilter='';render()};$('storesBtn').onclick=openStores;$('closeStores').onclick=()=>$('storesDialog').close();$('findStores').onclick=findNearby;$('saveStores').onclick=saveStoreSelection;$('settingsBtn').onclick=openSettings;$('closeSettings').onclick=()=>$('settingsDialog').close();$('saveSettings').onclick=saveSettings;$('exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify({exportedAt:new Date().toISOString(),products,settings},null,2)],{type:'application/json'}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='spesa-smart-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();URL.revokeObjectURL(u)};document.querySelectorAll('[data-go]').forEach(b=>b.onclick=()=>$(b.dataset.go).scrollIntoView({behavior:'smooth'}))}
-async function init(){bind();stores=await loadStores(settings);render();await Promise.allSettled([refreshOffers(),syncProducts()]);clearInterval(timer);timer=setInterval(()=>syncProducts(true),30000);addEventListener('focus',()=>syncProducts(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden)syncProducts(true)});if('serviceWorker'in navigator)addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js').catch(console.warn))}init();
+import {
+  getProducts,
+  saveProducts,
+  getSettings,
+  saveSettings,
+  exportData
+} from "./storage.js";
+
+import {
+  syncProductToGoogle,
+  deleteProductFromGoogle,
+  loadOffers
+} from "./api.js";
+
+import {
+  renderProducts,
+  renderOffers
+} from "./ui.js";
+
+let products = getProducts();
+let settings = getSettings();
+let offers = [];
+
+const $ = id => document.getElementById(id);
+const productDialog = $("productDialog");
+const settingsDialog = $("settingsDialog");
+
+function uid() {
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function openProductDialog(product = null) {
+  $("productDialogTitle").textContent =
+    product ? "Modifica prodotto" : "Aggiungi prodotto";
+
+  $("editingProductId").value = product?.id || "";
+  $("productName").value = product?.name || "";
+  $("productBrand").value = product?.brand || "";
+  $("productFormat").value = product?.format || "";
+  $("productCategory").value = product?.category || "Alimentari";
+  $("maximumPrice").value = product?.maximumPrice || "";
+  $("productFavorite").checked = Boolean(product?.favorite);
+  $("formMessage").textContent = "";
+
+  productDialog.showModal();
+
+  setTimeout(() => $("productName").focus(), 50);
+}
+
+function closeProductDialog() {
+  productDialog.close();
+}
+
+async function saveProduct() {
+  const name = $("productName").value.trim();
+
+  if (!name) {
+    $("formMessage").textContent = "Inserisci il nome del prodotto.";
+    return;
+  }
+
+  const editingId = $("editingProductId").value;
+
+  const duplicate = products.find(product =>
+    product.name.toLowerCase() === name.toLowerCase() &&
+    product.id !== editingId
+  );
+
+  if (duplicate) {
+    $("formMessage").textContent = "Questo prodotto è già presente.";
+    return;
+  }
+
+  const product = {
+    id: editingId || uid(),
+    name,
+    brand: $("productBrand").value.trim(),
+    format: $("productFormat").value.trim(),
+    category: $("productCategory").value,
+    maximumPrice: $("maximumPrice").value
+      ? Number($("maximumPrice").value)
+      : null,
+    favorite: $("productFavorite").checked,
+    updatedAt: new Date().toISOString()
+  };
+
+  if (editingId) {
+    products = products.map(existing =>
+      existing.id === editingId ? product : existing
+    );
+  } else {
+    products.unshift(product);
+  }
+
+  saveProducts(products);
+  refreshUI();
+  closeProductDialog();
+
+  try {
+    await syncProductToGoogle(product, settings);
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function editProduct(id) {
+  openProductDialog(products.find(product => product.id === id));
+}
+
+function duplicateProduct(id) {
+  const source = products.find(product => product.id === id);
+  if (!source) return;
+
+  products.unshift({
+    ...source,
+    id: uid(),
+    name: `${source.name} copia`,
+    updatedAt: new Date().toISOString()
+  });
+
+  saveProducts(products);
+  refreshUI();
+}
+
+async function deleteProduct(id) {
+  const product = products.find(item => item.id === id);
+
+  if (!product || !confirm(`Eliminare "${product.name}"?`)) return;
+
+  products = products.filter(item => item.id !== id);
+  saveProducts(products);
+  refreshUI();
+
+  try {
+    await deleteProductFromGoogle(id, settings);
+  } catch (error) {
+    console.warn(error);
+  }
+}
+
+function filteredProducts() {
+  const query = $("productSearch").value.trim().toLowerCase();
+  const category = $("categoryFilter").value;
+
+  return products
+    .filter(product =>
+      !query ||
+      [product.name, product.brand, product.format, product.category]
+        .join(" ")
+        .toLowerCase()
+        .includes(query)
+    )
+    .filter(product => !category || product.category === category)
+    .sort((a, b) =>
+      Number(b.favorite) - Number(a.favorite) ||
+      a.name.localeCompare(b.name, "it")
+    );
+}
+
+function updateCategoryFilter() {
+  const current = $("categoryFilter").value;
+
+  const categories = [
+    ...new Set(products.map(product => product.category).filter(Boolean))
+  ].sort();
+
+  $("categoryFilter").innerHTML =
+    `<option value="">Tutte le categorie</option>` +
+    categories.map(category =>
+      `<option value="${category}">${category}</option>`
+    ).join("");
+
+  $("categoryFilter").value =
+    categories.includes(current) ? current : "";
+}
+
+function refreshUI() {
+  updateCategoryFilter();
+
+  renderProducts(
+    $("productsList"),
+    filteredProducts(),
+    {
+      onAdd: () => openProductDialog(),
+      edit: editProduct,
+      duplicate: duplicateProduct,
+      delete: deleteProduct
+    }
+  );
+
+  const relevantOffers = renderOffers(
+    $("offersList"),
+    offers,
+    products
+  );
+
+  $("productsCount").textContent = products.length;
+  $("offersCount").textContent = relevantOffers.length;
+}
+
+async function refreshOffers() {
+  $("refreshButton").disabled = true;
+  $("refreshButton").textContent = "Aggiornamento…";
+
+  try {
+    offers = await loadOffers();
+  } catch {
+    offers = [];
+  } finally {
+    refreshUI();
+    $("refreshButton").disabled = false;
+    $("refreshButton").textContent = "Aggiorna offerte";
+  }
+}
+
+function openSettings() {
+  $("familyCode").value = settings.familyCode || "";
+  $("city").value = settings.city || "";
+  $("appsScriptUrl").value = settings.appsScriptUrl || "";
+  $("settingsMessage").textContent = "";
+  settingsDialog.showModal();
+}
+
+function saveSettingsNow() {
+  settings = {
+    familyCode: $("familyCode").value.trim(),
+    city: $("city").value.trim(),
+    appsScriptUrl: $("appsScriptUrl").value.trim()
+  };
+
+  saveSettings(settings);
+
+  $("settingsMessage").style.color = "var(--primary)";
+  $("settingsMessage").textContent = "Impostazioni salvate.";
+
+  setTimeout(() => settingsDialog.close(), 500);
+}
+
+function downloadExport() {
+  const blob = new Blob([exportData()], {
+    type: "application/json"
+  });
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download =
+    `spesa-smart-backup-${new Date().toISOString().slice(0, 10)}.json`;
+
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+$("addProductButton").addEventListener(
+  "click",
+  () => openProductDialog()
+);
+
+$("navAddButton").addEventListener(
+  "click",
+  () => openProductDialog()
+);
+
+$("closeProductDialog").addEventListener(
+  "click",
+  closeProductDialog
+);
+
+$("cancelProductButton").addEventListener(
+  "click",
+  closeProductDialog
+);
+
+$("saveProductButton").addEventListener(
+  "click",
+  saveProduct
+);
+
+$("productName").addEventListener("keydown", event => {
+  if (event.key === "Enter") saveProduct();
+});
+
+$("productSearch").addEventListener(
+  "input",
+  refreshUI
+);
+
+$("categoryFilter").addEventListener(
+  "change",
+  refreshUI
+);
+
+$("refreshButton").addEventListener(
+  "click",
+  refreshOffers
+);
+
+$("settingsButton").addEventListener(
+  "click",
+  openSettings
+);
+
+$("closeSettingsDialog").addEventListener(
+  "click",
+  () => settingsDialog.close()
+);
+
+$("saveSettingsButton").addEventListener(
+  "click",
+  saveSettingsNow
+);
+
+$("exportButton").addEventListener(
+  "click",
+  downloadExport
+);
+
+document.querySelectorAll("[data-target]").forEach(button => {
+  button.addEventListener("click", () => {
+    document
+      .getElementById(button.dataset.target)
+      ?.scrollIntoView({ behavior: "smooth" });
+  });
+});
+
+productDialog.addEventListener("click", event => {
+  if (event.target === productDialog) closeProductDialog();
+});
+
+settingsDialog.addEventListener("click", event => {
+  if (event.target === settingsDialog) settingsDialog.close();
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("./service-worker.js")
+      .catch(console.warn);
+  });
+}
+
+refreshUI();
+refreshOffers();
