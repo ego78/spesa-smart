@@ -1,42 +1,9 @@
-export async function syncProductToGoogle(product, settings) {
-  if (!settings.appsScriptUrl) return { skipped: true };
+import{family}from'./storage.js';
+function cfg(s){const scriptUrl=String(s.scriptUrl||'').trim(),familyCode=family(s.familyCode);if(!scriptUrl)throw Error('Inserisci URL Apps Script.');if(!familyCode)throw Error('Inserisci il codice famiglia.');return{scriptUrl,familyCode}}
+async function parse(r){if(!r.ok)throw Error('Errore HTTP '+r.status);const d=await r.json();if(d.ok===false)throw Error(d.error||'Operazione non riuscita');return d}
+export async function listRemote(s){const{scriptUrl,familyCode}=cfg(s),u=new URL(scriptUrl);u.searchParams.set('action','listProducts');u.searchParams.set('familyCode',familyCode);u.searchParams.set('_',Date.now());return (await parse(await fetch(u,{cache:'no-store'}))).products||[]}
+export async function upsertRemote(s,product){const{scriptUrl,familyCode}=cfg(s);return parse(await fetch(scriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'upsertProduct',familyCode,product})}))}
+export async function deleteRemote(s,productId){const{scriptUrl,familyCode}=cfg(s);return parse(await fetch(scriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'deleteProduct',familyCode,productId})}))}
 
-  const response = await fetch(settings.appsScriptUrl, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "upsertProduct",
-      familyCode: settings.familyCode || "default",
-      product
-    })
-  });
-
-  if (!response.ok) throw new Error("Sincronizzazione non riuscita");
-  return response.json();
-}
-
-export async function deleteProductFromGoogle(productId, settings) {
-  if (!settings.appsScriptUrl) return { skipped: true };
-
-  const response = await fetch(settings.appsScriptUrl, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify({
-      action: "deleteProduct",
-      familyCode: settings.familyCode || "default",
-      productId
-    })
-  });
-
-  if (!response.ok) throw new Error("Eliminazione remota non riuscita");
-  return response.json();
-}
-
-export async function loadOffers() {
-  const response = await fetch(`data/offerte.json?t=${Date.now()}`, {
-    cache: "no-store"
-  });
-
-  if (!response.ok) throw new Error("Impossibile leggere le offerte");
-  return response.json();
-}
+export async function listStoresRemote(s){const{scriptUrl,familyCode}=cfg(s),u=new URL(scriptUrl);u.searchParams.set('action','listSupermarkets');u.searchParams.set('familyCode',familyCode);u.searchParams.set('_',Date.now());return (await parse(await fetch(u,{cache:'no-store'}))).supermarkets||[]}
+export async function saveStoresRemote(s,supermarkets){const{scriptUrl,familyCode}=cfg(s);return parse(await fetch(scriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'saveSupermarkets',familyCode,supermarkets})}))}
