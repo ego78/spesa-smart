@@ -9,21 +9,38 @@ const appsScriptUrl = process.env.APPS_SCRIPT_URL || "";
 const familyCode = process.env.FAMILY_CODE || "default";
 const minimumScore = Number(process.env.MINIMUM_MATCH_SCORE || "0.62");
 
+async function loadRemote(action, fallback = []) {
+  if (!appsScriptUrl) return fallback;
+  const url = new URL(appsScriptUrl);
+  url.searchParams.set("action", action);
+  url.searchParams.set("familyCode", familyCode);
+  url.searchParams.set("_", Date.now());
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`Google Apps Script: HTTP ${response.status}`);
+  const data = await response.json();
+  if (!data.ok) throw new Error(data.error || `Errore ${action}`);
+  return data;
+}
+
 async function loadProducts() {
   if (!appsScriptUrl) {
     console.warn("APPS_SCRIPT_URL non configurato: nessun prodotto remoto da filtrare.");
     return [];
   }
+  const data = await loadRemote("listProducts", {});
+  return Array.isArray(data.products) ? data.products : [];
+}
 
-  const url = new URL(appsScriptUrl);
-  url.searchParams.set("action", "listProducts");
-  url.searchParams.set("familyCode", familyCode);
-
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Google Apps Script: HTTP ${response.status}`);
-
-  const data = await response.json();
-  return Array.isArray(data) ? data : (data.products || []);
+async function loadSelectedChains() {
+  if (!appsScriptUrl) return [];
+  const data = await loadRemote("listSupermarkets", {});
+  const stores = Array.isArray(data.supermarkets) ? data.supermarkets : [];
+  return [...new Set(
+    stores
+      .filter(store => store.selected === true)
+      .map(store => String(store.brand || store.name || "").trim().toUpperCase())
+      .filter(Boolean)
+  )];
 }
 
 function matchesWantedProduct(offer, products) {
@@ -61,13 +78,25 @@ async function safeScan(name, scanner) {
   }
 }
 
-const products = await loadProducts();
-console.log(`Prodotti monitorati: ${products.length}`);
-
-const results = await Promise.all([
-  safeScan("Eurospin", scanEurospin),
-  safeScan("PENNY", scanPenny)
+const [products, selectedChains] = await Promise.all([
+  loadProducts(),
+  loadSelectedChains()
 ]);
+console.log(`Prodotti monitorati: ${products.length}`);
+console.log(`Catene selezionate: ${selectedChains.length ? selectedChains.join(", ") : "nessun filtro"}`);
+
+const scanners = [
+  { name: "Eurospin", aliases: ["EUROSPIN"], scan: scanEurospin },
+  { name: "PENNY", aliases: ["PENNY"], scan: scanPenny }
+];
+
+const enabledScanners = selectedChains.length
+  ? scanners.filter(item => item.aliases.some(alias => selectedChains.some(chain => chain.includes(alias))))
+  : scanners;
+
+const results = await Promise.all(
+  enabledScanners.map(item => safeScan(item.name, item.scan))
+);
 
 const allOffers = uniqueOffers(results.flat());
 
