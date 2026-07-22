@@ -52,5 +52,20 @@ Dopo aver sostituito `google/Code.gs`, creare una **nuova distribuzione** della 
 - non dichiara locale un'offerta finché il connector non dispone di una fonte ufficiale specifica del punto vendita.
 
 
-## Versione 2.0.6
+## Versione 2.1.0
 Aggiunto il piano intelligente che assegna ogni prodotto all'offerta più economica tra i supermercati selezionati, raggruppa gli acquisti per negozio e segnala i prodotti ancora da completare.
+
+## Versione 2.1.0 — Volantini locali
+
+Questa versione distingue tra offerte generali della catena e offerte estratte dal PDF ufficiale del punto vendita.
+
+1. In **I miei supermercati**, premi **Trova volantino**.
+2. Sul sito ufficiale della catena seleziona il punto vendita corretto.
+3. Copia il collegamento diretto al PDF e premi **Collega PDF** nell'app.
+4. Salva/aggiorna `google/Code.gs` e crea una nuova versione della distribuzione Apps Script.
+5. In GitHub aggiungi il secret `OPENAI_API_KEY`.
+6. Avvia il workflow **Cerca offerte automatiche**.
+
+Le offerte estratte dal PDF vengono marcate `localValidityVerified: true`. Le offerte PENNY/Eurospin recuperate dalle fonti generali restano disponibili come fallback, ma sono indicate come non verificate per il singolo negozio.
+
+Catene con collegamento ufficiale già predisposto: PENNY, Eurospin, Lidl, MD, Conad, Despar/Eurospar/Interspar, Famila, Coop/Ipercoop, Carrefour, ALDI, Todis e DOK.
