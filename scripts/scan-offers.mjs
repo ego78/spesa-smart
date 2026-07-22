@@ -7,6 +7,7 @@ import { chainFor } from '../connectors/registry.mjs';
 import { uniqueOffers } from '../connectors/common.mjs';
 
 const OUTPUT=new URL('../data/offerte.json',import.meta.url);
+const LINKS_OUTPUT=new URL('../data/volantini-locali.json',import.meta.url);
 const config=JSON.parse(await fs.readFile(new URL('../config/app.json',import.meta.url),'utf8'));
 const appsScriptUrl=String(process.env.APPS_SCRIPT_URL||'').trim();
 const envFamily=String(process.env.FAMILY_CODE||'').trim();
@@ -31,6 +32,34 @@ async function loadSelectedStores(){
 function norm(v){return String(v||'').trim().toUpperCase()}
 function locationsFor(offer,stores){const chain=norm(offer.store||offer.chain);return stores.filter(s=>{const c=chainFor(s.brand||s.name);return c&&c.aliases.some(a=>chain.includes(a))}).map(s=>({id:s.id||'',name:s.name||s.brand||'',brand:s.brand||s.name||'',address:s.address||'',distance:Number.isFinite(Number(s.distance))?Number(s.distance):null,lat:Number.isFinite(Number(s.lat))?Number(s.lat):null,lon:Number.isFinite(Number(s.lon))?Number(s.lon):null})).sort((a,b)=>(a.distance??9999)-(b.distance??9999))}
 function attachFallback(offers,stores){return offers.map(o=>{if(o.localValidityVerified)return o;const locations=locationsFor(o,stores);return{...o,locations,nearestStore:locations[0]||null,offerScope:locations.length?'selected-chain':'national-chain',localValidityVerified:false}})}
+
+function buildFlyerLinks(stores,offers){
+ const now=new Date().toISOString();
+ return stores.filter(s=>s?.selected===true||true).map(store=>{
+   const related=offers.filter(o=>String(o.flyerStoreId||'')===String(store.id||''));
+   const verified=related.find(o=>o.localValidityVerified===true);
+   const chain=chainFor(store.brand||store.name);
+   return {
+     familyCode,
+     storeId:String(store.id||''),
+     chainId:chain?.id||'',
+     chain:store.brand||store.name||'',
+     storeName:store.name||store.brand||'',
+     address:store.address||'',
+     connectionMode:['penny','eurospin'].includes(chain?.id)?'automatic':'manual-pdf',
+     connected:Boolean(verified),
+     verified:Boolean(verified),
+     officialStoreId:String(verified?.officialStoreId||store.officialStoreId||store.storeCode||''),
+     officialStoreAlias:String(verified?.officialStoreAlias||''),
+     flyerId:String(verified?.flyerId||''),
+     promotionId:String(verified?.promotionId||''),
+     offersCount:related.length,
+     lastCheckedAt:now,
+     lastSuccessfulUpdateAt:verified?now:null
+   };
+ });
+}
+
 async function safe(name,fn){try{const out=await fn();console.log(`${name}: ${out.length} offerte`);return out}catch(e){console.error(`${name}: ${e.message}`);return[]}}
 
 const stores=await loadSelectedStores();
@@ -59,6 +88,9 @@ if(chains.includes('eurospin')&&!stores.some(s=>chainFor(s.brand||s.name)?.id===
 const fallback=attachFallback((await Promise.all(fallbackJobs)).flat(),stores);
 const offers=uniqueOffers([...localResults,...fallback]).sort((a,b)=>String(a.store).localeCompare(String(b.store),'it')||String(a.product).localeCompare(String(b.product),'it'));
 await fs.writeFile(OUTPUT,JSON.stringify(offers,null,2)+'\n','utf8');
+const flyerLinks=buildFlyerLinks(stores,offers);
+await fs.writeFile(LINKS_OUTPUT,JSON.stringify({generatedAt:new Date().toISOString(),familyCode,stores:flyerLinks},null,2)+'\n','utf8');
+console.log('Collegamenti volantini: '+flyerLinks.map(x=>`${x.chain}: ${x.connected?'collegato':'non collegato'} (${x.offersCount})`).join(' | '));
 console.log(`Offerte locali verificate: ${offers.filter(o=>o.localValidityVerified).length}`);
 console.log(`Offerte generali/non verificate: ${offers.filter(o=>!o.localValidityVerified).length}`);
 console.log(`Totale offerte: ${offers.length}`);
