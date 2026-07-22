@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { scanEurospin } from '../connectors/eurospin.mjs';
+import { scanEurospinLocal } from '../connectors/eurospin-local.mjs';
 import { scanPenny } from '../connectors/penny.mjs';
 import { scanPennyLocal } from '../connectors/penny-local.mjs';
 import { chainFor } from '../connectors/registry.mjs';
@@ -36,7 +37,9 @@ const stores=await loadSelectedStores();
 console.log(`Punti vendita selezionati: ${stores.length}`);
 if(!stores.length)throw new Error(`Nessun supermercato selezionato per ${familyCode}. Controlla FAMILY_CODE e APPS_SCRIPT_URL.`);
 const pennyStores=stores.filter(s=>chainFor(s.brand||s.name)?.id==='penny');
+const eurospinStores=stores.filter(s=>chainFor(s.brand||s.name)?.id==='eurospin');
 const pennyJobs=pennyStores.map(store=>safe(`PENNY locale ${store.name||store.brand}`,()=>scanPennyLocal(store)));
+const eurospinJobs=eurospinStores.map(store=>safe(`Eurospin locale ${store.name||store.brand}`,()=>scanEurospinLocal(store)));
 const pdfStores=stores.filter(s=>chainFor(s.brand||s.name)?.id!=='penny'&&String(s.flyerUrl||'').trim());
 let pdfJobs=[];
 if(pdfStores.length){
@@ -47,7 +50,7 @@ if(pdfStores.length){
     pdfJobs=pdfStores.map(store=>safe(`Volantino locale ${store.name||store.brand}`,()=>scanFlyerPdf(store,String(store.flyerUrl).trim())));
   }
 }
-const localResults=(await Promise.all([...pennyJobs,...pdfJobs])).flat();
+const localResults=(await Promise.all([...pennyJobs,...eurospinJobs,...pdfJobs])).flat();
 const verifiedStoreIds=new Set(localResults.map(o=>String(o.flyerStoreId||'')).filter(Boolean));
 const chains=[...new Set(stores.map(s=>chainFor(s.brand||s.name)?.id).filter(Boolean))];
 const fallbackJobs=[];
