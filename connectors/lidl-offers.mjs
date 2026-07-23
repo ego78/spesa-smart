@@ -6,6 +6,7 @@ import { resolveLidlFlyer } from './lidl-local.mjs';
 
 const HOME_URL = 'https://www.lidl.it/';
 const LANDING_URL = 'https://www.lidl.it/c/volantino-lidl/s10018048';
+const WIDGET_URL = 'https://endpoints.leaflets.schwarz/v4/widget?widget_id=b72c9549-b8f0-11ed-b03c-fa163e81deca&store_id=0&region_id=0';
 
 function parseItalianPrice(value = '') {
   const text = cleanText(value);
@@ -139,6 +140,111 @@ async function dismissConsent(page) {
       }
     }
   }
+}
+
+async function resolveViewerUrl(page) {
+  try {
+    const response = await page.request.get(WIDGET_URL, {
+      timeout: 30000,
+      headers: {
+        accept: 'application/json',
+        'accept-language': 'it-IT,it;q=0.9,en;q=0.7'
+      }
+    });
+
+    if (!response.ok()) return '';
+    const payload = await response.json();
+    const flyers = payload?.widget?.flyers || [];
+    const weekly = flyers.find(item =>
+      /offerte\s+valide|settimana|gusti|estate|convenienza/i.test(`${item?.name || ''} ${item?.title || ''}`)
+    ) || flyers[0];
+
+    return String(weekly?.url || '');
+  } catch {
+    return '';
+  }
+}
+
+async function interactWithViewer(page) {
+  // Consente al visualizzatore di completare il caricamento iniziale.
+  await page.waitForTimeout(2500);
+
+  // Prova i comandi più comuni del viewer: elenco prodotti, zoom e pagine successive.
+  const clickPatterns = [
+    /accetta tutto|accetta tutti|consenti tutto/i,
+    /prodotti|articoli|offerte/i,
+    /pagina successiva|avanti|successiva|next/i
+  ];
+
+  for (const pattern of clickPatterns) {
+    const controls = page.getByRole('button', { name: pattern });
+    const count = Math.min(await controls.count(), 6);
+    for (let i = 0; i < count; i += 1) {
+      try {
+        const control = controls.nth(i);
+        if (await control.isVisible()) {
+          await control.click({ timeout: 1800 });
+          await page.waitForTimeout(650);
+        }
+      } catch {
+        // I controlli cambiano durante la navigazione del volantino.
+      }
+    }
+  }
+
+  // Sfoglia con tastiera e scroll per attivare il lazy loading delle pagine.
+  for (let i = 0; i < 18; i += 1) {
+    await page.keyboard.press('ArrowRight').catch(() => {});
+    await page.mouse.wheel(0, 850);
+    await page.waitForTimeout(350);
+  }
+
+  await page.keyboard.press('Home').catch(() => {});
+  await page.waitForTimeout(800);
+}
+
+async function extractViewerCards(page) {
+  return page.evaluate(() => {
+    const clean = value => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const price = value => {
+      const matches = [...clean(value).matchAll(/(\d{1,3}[.,]\d{2})\s*€/g)];
+      return matches.length ? Number(matches[matches.length - 1][1].replace(',', '.')) : null;
+    };
+
+    const selectors = [
+      '[data-product]', '[data-article]', '[data-offer]',
+      '[class*="product"]', '[class*="article"]', '[class*="offer"]',
+      '[aria-label*="€"]', '[title*="€"]'
+    ];
+    const nodes = [...new Set(selectors.flatMap(selector => [...document.querySelectorAll(selector)]))];
+    const output = [];
+
+    for (const node of nodes) {
+      const text = clean(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title'));
+      const value = price(text);
+      if (!value || text.length < 4 || text.length > 1200) continue;
+
+      const heading = node.querySelector('h1,h2,h3,h4,h5,[class*="title"],[class*="name"]');
+      const image = node.querySelector('img');
+      const title = clean(heading?.textContent || image?.alt || text.replace(/\d{1,3}[.,]\d{2}\s*€.*/, ''));
+      if (!title || title.length < 3) continue;
+
+      output.push({
+        title,
+        imageAlt: clean(image?.alt),
+        text,
+        price: value,
+        oldPrice: null,
+        unitPrice: null,
+        format: clean(text.match(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|l|ml|cl)\b/i)?.[0]),
+        discount: clean(text.match(/-\s*\d{1,2}\s*%/)?.[0]),
+        image: image?.currentSrc || image?.src || '',
+        sourceUrl: location.href
+      });
+    }
+
+    return output;
+  });
 }
 
 async function findOffersUrl(page) {
@@ -587,20 +693,33 @@ export async function scanLidlOffers(store = {}) {
     await attachNetworkDebug(page, debugState);
 
     const offersUrl = await findOffersUrl(page);
-    if (!offersUrl) {
-      throw new Error('Lidl: pagina delle offerte settimanali non individuata');
+    const viewerUrl = await resolveViewerUrl(page);
+    if (!offersUrl && !viewerUrl) {
+      throw new Error('Lidl: né pagina offerte né visualizzatore del volantino individuati');
     }
 
-    await page.goto(offersUrl, { waitUntil: 'networkidle', timeout: 90000 });
-    await dismissConsent(page);
-
-    // Più cicli per osservare caricamenti progressivi, tab e lazy loading.
-    for (let cycle = 0; cycle < 3; cycle += 1) {
-      await expandOffers(page);
-      await page.waitForTimeout(1500);
+    // Prima apre la pagina offerte: mantiene le card già funzionanti.
+    let pageCards = [];
+    if (offersUrl) {
+      await page.goto(offersUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await dismissConsent(page);
+      for (let cycle = 0; cycle < 2; cycle += 1) {
+        await expandOffers(page);
+        await page.waitForTimeout(900);
+      }
+      pageCards = await extractCards(page);
     }
 
-    const rawCards = await extractCards(page);
+    // Poi apre il volantino digitale e intercetta le API del visualizzatore.
+    let viewerCards = [];
+    if (viewerUrl) {
+      await page.goto(viewerUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await dismissConsent(page);
+      await interactWithViewer(page);
+      viewerCards = await extractViewerCards(page);
+    }
+
+    const rawCards = [...pageCards, ...viewerCards];
     const offers = uniqueOffers(
       rawCards
         .map((raw, index) =>
@@ -611,7 +730,10 @@ export async function scanLidlOffers(store = {}) {
 
     details = {
       offersUrl,
+      viewerUrl,
       pageTitle: await page.title(),
+      pageCards: pageCards.length,
+      viewerCards: viewerCards.length,
       rawCards: rawCards.length,
       validOffers: offers.length,
       flyerUrl: context.flyerUrl || '',
@@ -623,7 +745,7 @@ export async function scanLidlOffers(store = {}) {
     await saveDebugArtifacts(page, debugState, details);
     await browserContext.close();
 
-    console.log(`Lidl: pagina ${offersUrl}; ${rawCards.length} card candidate; ${offers.length} offerte valide`);
+    console.log(`Lidl: pagina offerte ${offersUrl || '-'}; viewer ${viewerUrl || '-'}; ${pageCards.length} card pagina; ${viewerCards.length} card viewer; ${offers.length} offerte valide`);
     console.log(`Lidl debug: ${debugState.network.length} richieste; ${debugState.jsonResponses.length} JSON salvati in debug/lidl`);
 
     if (!offers.length) {
