@@ -1,4 +1,4 @@
-# Catalogo prodotti unificato — v5.0.1
+# Catalogo prodotti unificato — v5.1.0
 
 Questa versione parte dalla base stabile v4.3.0 e aggiunge il catalogo unificato senza introdurre il motore universale incompleto.
 

@@ -1,14 +1,16 @@
 {
   "name": "spesa-smart",
-  "version": "5.0.1",
+  "version": "5.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "scan-offers": "node scripts/scan-offers.mjs",
-    "test": "node scripts/test-catalog.mjs"
+    "test": "node scripts/test-catalog.mjs",
+    "test:lidl": "node scripts/test-lidl.mjs"
   },
   "dependencies": {
     "cheerio": "1.0.0",
-    "fast-fuzzy": "1.12.0"
+    "fast-fuzzy": "1.12.0",
+    "playwright": "1.55.0"
   }
 }
