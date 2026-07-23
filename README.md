@@ -1,3 +1,7 @@
+# Spesa Smart 5.0 — Motore universale
+
+Questa versione introduce un contratto unico per i connettori, catalogo di copertura, pulizia automatica delle offerte scadute, storico degli ultimi 60 aggiornamenti e inserimento rapido della lista. PENNY ed Eurospin estraggono offerte; Lidl collega automaticamente il volantino nazionale. Le altre catene restano predisposte al PDF o a futuri connettori.
+
 ## Versione 4.2.1
 
 - PENNY ed Eurospin con offerte disponibili vengono mostrati come “Volantino locale collegato”.
