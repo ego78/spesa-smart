@@ -11,6 +11,12 @@ assert.equal(__test.cleanTitle('In punto vendita Albicocche ^{}'), 'Albicocche')
 assert.equal(__test.titleIsUsable('Cetrioli'), true);
 assert.equal(__test.titleIsUsable('Mostra di più'), false);
 
+assert.deepEqual(__test.pricesFromText('Yogurt 1,49 €'), [1.49]);
+assert.equal(
+  __test.flyerIdentifierFromUrl('https://www.lidl.it/l/it/volantini/offerte-estate/ar/0'),
+  'offerte-estate'
+);
+
 const offer = __test.normalizeOffer(
   {
     title: 'Cetrioli',
