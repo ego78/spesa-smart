@@ -122,3 +122,11 @@ Aggiunto catalogo prodotti unificato. Vedi `README-CATALOGO.md`.
 - diagnostica completa Lidl;
 - HAR, DOM, screenshot e risposte JSON;
 - artefatto GitHub automatico `lidl-debug-NUMERO`.
+
+
+### Novità v5.4.0
+
+- download automatico del PDF Lidl;
+- estrazione del testo incorporato con PDF.js;
+- unione e deduplicazione con le offerte HTML;
+- diagnostica `pdf-extraction.json`.
