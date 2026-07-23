@@ -168,7 +168,232 @@ function isIncludedFlyer(item = {}) {
   return true;
 }
 
+function canonicalFlyerUrl(value = '') {
+  try {
+    const url = new URL(String(value || ''), LANDING_URL);
+    if (!/\/l\/it\/volantini\//i.test(url.pathname)) return '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function collectFlyersFromPayload(payload, source = 'network') {
+  const output = [];
+  const visited = new WeakSet();
+
+  const visit = (value, trail = '') => {
+    if (!value || typeof value !== 'object') return;
+    if (visited.has(value)) return;
+    visited.add(value);
+
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${trail}[${index}]`));
+      return;
+    }
+
+    const rawUrl = value.url || value.href || value.viewerUrl || value.flyerUrl || value.link;
+    const identifier = cleanText(value.flyer_identifier || value.flyerIdentifier || value.identifier || '');
+    const synthesizedUrl = identifier
+      ? `https://www.lidl.it/l/it/volantini/${encodeURIComponent(identifier)}/ar/0`
+      : '';
+    const url = canonicalFlyerUrl(rawUrl) || canonicalFlyerUrl(synthesizedUrl);
+    if (url) {
+      output.push({
+        ...value,
+        url,
+        source,
+        category: cleanText(value.category || value.group || value.section || ''),
+        label: flyerLabel(value) || cleanText(trail) || 'Volantino Lidl'
+      });
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      if (child && typeof child === 'object') visit(child, trail ? `${trail}.${key}` : key);
+    }
+  };
+
+  visit(payload);
+  return output;
+}
+
+function dedupeFlyers(items = []) {
+  const map = new Map();
+  for (const item of items) {
+    const url = canonicalFlyerUrl(item?.url);
+    if (!url || !isIncludedFlyer({ ...item, url })) continue;
+    const identifier = flyerIdentifierFromUrl(url);
+    const key = identifier || url.replace(/\/$/, '');
+    const previous = map.get(key) || {};
+    map.set(key, {
+      ...previous,
+      ...item,
+      url,
+      label: flyerLabel(item) || previous.label || 'Volantino Lidl',
+      category: cleanText(item.category || previous.category || ''),
+      source: cleanText([previous.source, item.source].filter(Boolean).join(','))
+    });
+  }
+  return [...map.values()];
+}
+
+async function extractLandingFlyerCards(page) {
+  return page.evaluate(() => {
+    const clean = value => String(value || '').replace(/\u00a0/g, ' ').replace(/\s+/g, ' ').trim();
+    const absolute = value => {
+      try { return new URL(value, location.href).href; } catch { return ''; }
+    };
+    const sectionNames = /volantini settimanali|volantini speciali|volantini lidl viaggi/i;
+    const cards = [];
+
+    const sectionFor = node => {
+      let current = node;
+      for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+          const heading = sibling.matches?.('h1,h2,h3,h4') ? sibling : sibling.querySelector?.('h1,h2,h3,h4');
+          const text = clean(heading?.textContent || sibling.textContent);
+          const match = text.match(sectionNames);
+          if (match) return match[0];
+          sibling = sibling.previousElementSibling;
+        }
+      }
+      return '';
+    };
+
+    const selectors = [
+      'a[href*="/l/it/volantini/"]', 'iframe[src*="/volantini/"]',
+      '[data-testid*="flyer"]', '[data-test*="flyer"]',
+      '[class*="flyer"]', '[class*="leaflet"]',
+      'button', '[role="button"]'
+    ];
+
+    const nodes = [...new Set(selectors.flatMap(selector => [...document.querySelectorAll(selector)]))];
+    for (const node of nodes) {
+      const text = clean(node.textContent || node.getAttribute('aria-label') || node.getAttribute('title'));
+      const image = node.querySelector?.('img');
+      const imageAlt = clean(image?.alt);
+      const combined = clean(`${text} ${imageAlt}`);
+      const hrefNode = node.matches?.('a[href]') ? node : node.closest?.('a[href]') || node.querySelector?.('a[href]');
+      const href = absolute(hrefNode?.getAttribute('href') || node.getAttribute?.('src') || node.getAttribute?.('data-href') || '');
+      const looksLikeFlyer = /volantino|offerte valide|novità in negozio|lidl viaggi|tutti i gusti|prodotti per la tua estate/i.test(combined)
+        || /\/l\/it\/volantini\//i.test(href);
+      if (!looksLikeFlyer || combined.length > 900) continue;
+
+      cards.push({
+        title: combined,
+        category: sectionFor(node),
+        url: /\/l\/it\/volantini\//i.test(href) ? href : '',
+        image: image?.currentSrc || image?.src || '',
+        tag: node.tagName,
+        clickable: node.matches?.('button,[role="button"],a') || Boolean(node.closest?.('button,[role="button"],a'))
+      });
+    }
+
+    for (const entry of performance.getEntriesByType('resource')) {
+      const href = absolute(entry.name);
+      if (/\/l\/it\/volantini\//i.test(href)) {
+        cards.push({ title: '', category: '', url: href, image: '', tag: 'RESOURCE', clickable: false });
+      }
+    }
+
+    // Alcuni URL sono inseriti in attributi o script e non in normali link.
+    const html = document.documentElement.innerHTML;
+    const matches = html.match(/https?:\\?\/\\?\/www\.lidl\.it\\?\/l\\?\/it\\?\/volantini\\?\/[^"'<>\\s]+/gi) || [];
+    for (const raw of matches) {
+      const normalized = raw.replace(/\\\//g, '/').replace(/&amp;/g, '&');
+      cards.push({ title: '', category: '', url: absolute(normalized), image: '', tag: 'SCRIPT', clickable: false });
+    }
+
+    return cards;
+  });
+}
+
+async function clickLandingFlyerCards(page) {
+  const discovered = [];
+  const patterns = [
+    /volantino settimanale/i,
+    /offerte valide dal/i,
+    /volantini speciali/i
+  ];
+
+  for (const pattern of patterns) {
+    const candidates = page.getByText(pattern, { exact: false });
+    const count = Math.min(await candidates.count(), 8);
+    for (let index = 0; index < count; index += 1) {
+      const candidate = candidates.nth(index);
+      try {
+        if (!(await candidate.isVisible())) continue;
+        const text = cleanText(await candidate.innerText().catch(() => ''));
+        if (isTravelFlyer({ title: text })) continue;
+
+        const before = page.url();
+        const popupPromise = page.context().waitForEvent('page', { timeout: 2500 }).catch(() => null);
+        await candidate.click({ timeout: 3000 });
+        const popup = await popupPromise;
+        await page.waitForTimeout(1800);
+
+        const target = popup || page;
+        const url = canonicalFlyerUrl(target.url());
+        if (url) discovered.push({ title: text, url, source: 'landing-click' });
+
+        const nested = await extractLandingFlyerCards(target).catch(() => []);
+        discovered.push(...nested.map(item => ({ ...item, source: 'landing-click-dom' })));
+
+        if (popup) {
+          await popup.close().catch(() => {});
+        } else if (page.url() !== before) {
+          await page.goto(LANDING_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+          await dismissConsent(page);
+          await page.waitForTimeout(1200);
+        } else {
+          await page.keyboard.press('Escape').catch(() => {});
+        }
+      } catch {
+        // Le card possono essere duplicate o coperte dal banner cookie.
+      }
+    }
+  }
+
+  return discovered;
+}
+
 async function resolveViewerFlyers(page) {
+  const networkFlyers = [];
+  const responseListener = async response => {
+    const url = response.url();
+    if (!/endpoints\.leaflets\.schwarz\/v4\/(?:widget|flyer)/i.test(url)) return;
+    try {
+      const payload = await response.json();
+      networkFlyers.push(...collectFlyersFromPayload(payload, 'landing-network'));
+    } catch {
+      // Alcune risposte possono essere compresse o non JSON.
+    }
+  };
+
+  page.on('response', responseListener);
+  let landingCards = [];
+  let clickedCards = [];
+
+  try {
+    await page.goto(LANDING_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await dismissConsent(page);
+    await page.waitForTimeout(2500);
+    for (let index = 0; index < 6; index += 1) {
+      await page.mouse.wheel(0, 900);
+      await page.waitForTimeout(300);
+    }
+    await page.keyboard.press('Home').catch(() => {});
+    landingCards = await extractLandingFlyerCards(page);
+    clickedCards = await clickLandingFlyerCards(page);
+    await page.waitForTimeout(1200);
+  } finally {
+    page.off('response', responseListener);
+  }
+
+  // Il vecchio endpoint resta un fallback utile per i volantini speciali.
+  let widgetFlyers = [];
   try {
     const response = await page.request.get(WIDGET_URL, {
       timeout: 30000,
@@ -177,22 +402,28 @@ async function resolveViewerFlyers(page) {
         'accept-language': 'it-IT,it;q=0.9,en;q=0.7'
       }
     });
-
-    if (!response.ok()) return [];
-    const payload = await response.json();
-    const flyers = Array.isArray(payload?.widget?.flyers) ? payload.widget.flyers : [];
-
-    return flyers
-      .filter(isIncludedFlyer)
-      .map((item, index) => ({
-        ...item,
-        url: String(item?.url || ''),
-        label: flyerLabel(item) || `Volantino ${index + 1}`,
-        index
-      }));
+    if (response.ok()) {
+      const payload = await response.json();
+      widgetFlyers = collectFlyersFromPayload(payload, 'widget-fallback');
+    }
   } catch {
-    return [];
+    // La pagina visibile rimane la sorgente primaria.
   }
+
+  const flyers = dedupeFlyers([
+    ...landingCards.map(item => ({ ...item, source: item.source || 'landing-dom' })),
+    ...clickedCards,
+    ...networkFlyers,
+    ...widgetFlyers
+  ]).map((item, index) => ({ ...item, index }));
+
+  return {
+    flyers,
+    landingCards,
+    clickedCards,
+    networkFlyers: dedupeFlyers(networkFlyers),
+    widgetFlyers: dedupeFlyers(widgetFlyers)
+  };
 }
 
 async function interactWithViewer(page) {
@@ -534,6 +765,7 @@ async function extractPdfOffers(flyer) {
   if (!response.ok) throw new Error(`Lidl PDF: download fallito (${response.status})`);
 
   const data = new Uint8Array(await response.arrayBuffer());
+  const byteLength = data.byteLength;
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const document = await pdfjs.getDocument({ data, disableWorker: true }).promise;
   const pages = [];
@@ -553,7 +785,7 @@ async function extractPdfOffers(flyer) {
     offers: extractPdfOffersFromLines(pages, flyer),
     pages,
     pdfUrl,
-    bytes: data.byteLength
+    bytes: byteLength
   };
 }
 
@@ -1003,7 +1235,18 @@ export async function scanLidlOffers(store = {}) {
     await attachNetworkDebug(page, debugState);
 
     const offersUrl = await findOffersUrl(page);
-    const viewerFlyers = await resolveViewerFlyers(page);
+    const discovery = await resolveViewerFlyers(page);
+    const viewerFlyers = discovery.flyers;
+    await writeJson(path.join(DEBUG_DIR, 'cards.json'), discovery.landingCards);
+    await writeJson(path.join(DEBUG_DIR, 'flyers.json'), viewerFlyers);
+    await writeJson(path.join(DEBUG_DIR, 'flyer-discovery.json'), {
+      landingCards: discovery.landingCards.length,
+      clickedCards: discovery.clickedCards.length,
+      networkFlyers: discovery.networkFlyers.length,
+      widgetFlyers: discovery.widgetFlyers.length,
+      finalFlyers: viewerFlyers.length,
+      sources: viewerFlyers.map(item => ({ label: item.label, url: item.url, category: item.category, source: item.source }))
+    });
     if (!offersUrl && !viewerFlyers.length) {
       throw new Error('Lidl: né pagina offerte né volantini individuati');
     }
@@ -1086,7 +1329,12 @@ export async function scanLidlOffers(store = {}) {
 
     await writeJson(path.join(DEBUG_DIR, 'flyers-summary.json'), {
       generatedAt: new Date().toISOString(),
-      totalFromWidget: viewerFlyers.length,
+      discoverySource: 'pagina Volantini e Riviste + rete + widget fallback',
+      totalDiscovered: viewerFlyers.length,
+      landingCards: discovery.landingCards.length,
+      clickedCards: discovery.clickedCards.length,
+      networkFlyers: discovery.networkFlyers.length,
+      widgetFlyers: discovery.widgetFlyers.length,
       excludedRule: 'Lidl Viaggi / vacanze / travel',
       processedFlyers
     });
@@ -1165,5 +1413,8 @@ export const __test = {
   flyerIdentifierFromUrl,
   flyerLabel,
   isTravelFlyer,
-  isIncludedFlyer
+  isIncludedFlyer,
+  canonicalFlyerUrl,
+  collectFlyersFromPayload,
+  dedupeFlyers
 };
