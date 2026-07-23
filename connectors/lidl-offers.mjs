@@ -51,7 +51,7 @@ function cleanTitle(value = '') {
 function titleIsUsable(value = '') {
   const title = cleanTitle(value);
   if (!title || title.length < 3 || title.length > 160) return false;
-  if (/^(scopri|mostra|offerte|questa settimana|prossima settimana|in punto vendita)$/i.test(title)) return false;
+  if (/^(scopri(?: di più)?|mostra(?: di più)?|offerte|questa settimana|prossima settimana|in punto vendita)$/i.test(title)) return false;
   if (/^\d/.test(title) && title.length < 12) return false;
   return /[a-zàèéìòù]/i.test(title);
 }
@@ -245,6 +245,194 @@ async function extractViewerCards(page) {
 
     return output;
   });
+}
+
+
+function flyerIdentifierFromUrl(viewerUrl = '') {
+  try {
+    const pathname = new URL(viewerUrl).pathname;
+    const match = pathname.match(/\/volantini\/([^/]+)\/ar\/\d+/i);
+    return match ? decodeURIComponent(match[1]) : '';
+  } catch {
+    return '';
+  }
+}
+
+async function fetchFlyerMetadata(page, viewerUrl) {
+  const identifier = flyerIdentifierFromUrl(viewerUrl);
+  if (!identifier) return null;
+
+  const endpoint = `https://endpoints.leaflets.schwarz/v4/flyer?flyer_identifier=${encodeURIComponent(identifier)}`;
+  const response = await page.request.get(endpoint, {
+    timeout: 45000,
+    headers: {
+      accept: 'application/json',
+      'accept-language': 'it-IT,it;q=0.9,en;q=0.7'
+    }
+  });
+
+  if (!response.ok()) return null;
+  const payload = await response.json();
+  return payload?.flyer || null;
+}
+
+function textItemToLineItem(item = {}) {
+  const transform = Array.isArray(item.transform) ? item.transform : [];
+  return {
+    text: cleanText(item.str || ''),
+    x: Number(transform[4] || 0),
+    y: Number(transform[5] || 0),
+    width: Number(item.width || 0),
+    height: Math.abs(Number(transform[3] || item.height || 0))
+  };
+}
+
+function groupPdfLines(items = []) {
+  const sorted = items
+    .filter(item => item.text)
+    .sort((a, b) => b.y - a.y || a.x - b.x);
+  const lines = [];
+
+  for (const item of sorted) {
+    const tolerance = Math.max(2.5, item.height * 0.45);
+    let line = lines.find(candidate => Math.abs(candidate.y - item.y) <= tolerance);
+    if (!line) {
+      line = { y: item.y, items: [] };
+      lines.push(line);
+    }
+    line.items.push(item);
+  }
+
+  return lines
+    .map(line => ({
+      y: line.y,
+      items: line.items.sort((a, b) => a.x - b.x),
+      text: cleanText(line.items.sort((a, b) => a.x - b.x).map(item => item.text).join(' '))
+    }))
+    .filter(line => line.text)
+    .sort((a, b) => b.y - a.y);
+}
+
+function pricesFromText(text = '') {
+  const normalized = cleanText(text).replace(/(\d)\s*[,.]\s*(\d{2})/g, '$1,$2');
+  const values = [];
+  const patterns = [
+    /(?:€\s*)?(\d{1,3}[,.]\d{2})(?:\s*€)?/g,
+    /(?:€\s*)?(\d{1,3})\s+(\d{2})(?:\s*€)?/g
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of normalized.matchAll(pattern)) {
+      const raw = match[2] ? `${match[1]}.${match[2]}` : match[1].replace(',', '.');
+      const value = Number(raw);
+      if (Number.isFinite(value) && value >= 0.05 && value <= 999.99) values.push(value);
+    }
+  }
+  return [...new Set(values)];
+}
+
+function isPdfNoise(text = '') {
+  const value = cleanText(text);
+  if (!value || value.length < 3) return true;
+  return /^(luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|sabato|domenica|prezzi validi|fino ad esaurimento|salvo errori|lidl plus|scopri di più|pagina \d+)$/i.test(value);
+}
+
+function productTitleFromPdfLines(lines, index) {
+  const candidates = [];
+  for (let offset = -4; offset <= 2; offset += 1) {
+    if (offset === 0) continue;
+    const text = cleanText(lines[index + offset]?.text || '');
+    if (!text || isPdfNoise(text) || pricesFromText(text).length) continue;
+    if (/^(al kg|al litro|cad\.|confezione|vaschetta|bottiglia|pezzi|ml|cl|kg|g|l)$/i.test(text)) continue;
+    if (text.length > 150) continue;
+    candidates.push(text);
+  }
+
+  const joined = cleanText(candidates.slice(-3).join(' '));
+  return joined
+    .replace(/\b(?:confezione|vaschetta|bottiglia)\s+da\s+\d.*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function formatFromPdfContext(text = '') {
+  return cleanText(text.match(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|l|ml|cl|pz|pezzi)\b/i)?.[0] || '');
+}
+
+function extractPdfOffersFromLines(pages = [], flyer = {}) {
+  const output = [];
+
+  for (const page of pages) {
+    const lines = page.lines || [];
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      const values = pricesFromText(line.text);
+      if (!values.length) continue;
+
+      const neighborhood = cleanText(lines.slice(Math.max(0, index - 4), Math.min(lines.length, index + 4)).map(item => item.text).join(' '));
+      const title = productTitleFromPdfLines(lines, index);
+      if (!titleIsUsable(title)) continue;
+      if (!/[a-zàèéìòù]{3}/i.test(title)) continue;
+
+      const plausible = values.filter(value => value > 0 && value < 500);
+      if (!plausible.length) continue;
+      const price = plausible[plausible.length - 1];
+      const oldCandidates = plausible.filter(value => value > price);
+
+      output.push({
+        title,
+        text: neighborhood,
+        price,
+        oldPrice: oldCandidates.length ? Math.min(...oldCandidates) : null,
+        unitPrice: null,
+        format: formatFromPdfContext(neighborhood),
+        discount: cleanText(neighborhood.match(/-\s*\d{1,2}\s*%/)?.[0] || ''),
+        image: flyer.pages?.find(item => Number(item.number) === Number(page.number))?.thumbnail || '',
+        sourceUrl: flyer.flyerUrlAbsolute || flyer.hiResPdfUrl || flyer.pdfUrl || '',
+        description: `Volantino Lidl, pagina ${page.number}`,
+        pdfPage: page.number
+      });
+    }
+  }
+
+  return output;
+}
+
+async function extractPdfOffers(flyer) {
+  const pdfUrl = String(flyer?.hiResPdfUrl || flyer?.pdfUrl || '');
+  if (!pdfUrl) return { offers: [], pages: [], pdfUrl: '' };
+
+  const response = await fetch(pdfUrl, {
+    headers: {
+      'user-agent': 'Mozilla/5.0',
+      accept: 'application/pdf,*/*'
+    },
+    signal: AbortSignal.timeout(90000)
+  });
+  if (!response.ok) throw new Error(`Lidl PDF: download fallito (${response.status})`);
+
+  const data = new Uint8Array(await response.arrayBuffer());
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const document = await pdfjs.getDocument({ data, disableWorker: true }).promise;
+  const pages = [];
+
+  for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+    const pdfPage = await document.getPage(pageNumber);
+    const content = await pdfPage.getTextContent();
+    const items = content.items.map(textItemToLineItem).filter(item => item.text);
+    pages.push({
+      number: pageNumber,
+      lines: groupPdfLines(items),
+      rawText: cleanText(items.map(item => item.text).join(' '))
+    });
+  }
+
+  return {
+    offers: extractPdfOffersFromLines(pages, flyer),
+    pages,
+    pdfUrl,
+    bytes: data.byteLength
+  };
 }
 
 async function findOffersUrl(page) {
@@ -710,16 +898,37 @@ export async function scanLidlOffers(store = {}) {
       pageCards = await extractCards(page);
     }
 
-    // Poi apre il volantino digitale e intercetta le API del visualizzatore.
+    // Apre il visualizzatore per mantenere il debug delle API interne.
     let viewerCards = [];
+    let flyerMetadata = null;
+    let pdfResult = { offers: [], pages: [], pdfUrl: '', bytes: 0 };
     if (viewerUrl) {
+      flyerMetadata = await fetchFlyerMetadata(page, viewerUrl);
       await page.goto(viewerUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await dismissConsent(page);
       await interactWithViewer(page);
       viewerCards = await extractViewerCards(page);
+
+      if (flyerMetadata?.hiResPdfUrl || flyerMetadata?.pdfUrl) {
+        try {
+          pdfResult = await extractPdfOffers(flyerMetadata);
+          await writeJson(path.join(DEBUG_DIR, 'pdf-extraction.json'), {
+            pdfUrl: pdfResult.pdfUrl,
+            bytes: pdfResult.bytes,
+            pages: pdfResult.pages.map(item => ({
+              number: item.number,
+              lines: item.lines,
+              rawText: item.rawText
+            })),
+            offers: pdfResult.offers
+          });
+        } catch (pdfError) {
+          debugState.artifactErrors.push(`PDF: ${pdfError.message}`);
+        }
+      }
     }
 
-    const rawCards = [...pageCards, ...viewerCards];
+    const rawCards = [...pageCards, ...viewerCards, ...pdfResult.offers];
     const offers = uniqueOffers(
       rawCards
         .map((raw, index) =>
@@ -734,6 +943,10 @@ export async function scanLidlOffers(store = {}) {
       pageTitle: await page.title(),
       pageCards: pageCards.length,
       viewerCards: viewerCards.length,
+      pdfCards: pdfResult.offers.length,
+      pdfPages: pdfResult.pages.length,
+      pdfUrl: pdfResult.pdfUrl,
+      pdfBytes: pdfResult.bytes,
       rawCards: rawCards.length,
       validOffers: offers.length,
       flyerUrl: context.flyerUrl || '',
@@ -745,7 +958,7 @@ export async function scanLidlOffers(store = {}) {
     await saveDebugArtifacts(page, debugState, details);
     await browserContext.close();
 
-    console.log(`Lidl: pagina offerte ${offersUrl || '-'}; viewer ${viewerUrl || '-'}; ${pageCards.length} card pagina; ${viewerCards.length} card viewer; ${offers.length} offerte valide`);
+    console.log(`Lidl: pagina offerte ${offersUrl || '-'}; viewer ${viewerUrl || '-'}; ${pageCards.length} card pagina; ${viewerCards.length} card viewer; ${pdfResult.offers.length} card PDF; ${offers.length} offerte valide`);
     console.log(`Lidl debug: ${debugState.network.length} richieste; ${debugState.jsonResponses.length} JSON salvati in debug/lidl`);
 
     if (!offers.length) {
@@ -777,5 +990,9 @@ export const __test = {
   parseDates,
   cleanTitle,
   titleIsUsable,
-  normalizeOffer
+  normalizeOffer,
+  pricesFromText,
+  groupPdfLines,
+  extractPdfOffersFromLines,
+  flyerIdentifierFromUrl
 };
