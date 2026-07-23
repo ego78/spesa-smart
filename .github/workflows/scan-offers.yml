@@ -2,7 +2,6 @@ name: Cerca offerte automatiche
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: "15 5 * * *"
 
@@ -29,39 +28,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verifica cartella repository
-        run: |
-          echo "Cartella corrente:"
-          pwd
-
-          echo "Contenuto:"
-          ls -la
-
-          echo "Repository Git:"
-          git rev-parse --show-toplevel
-
-      - name: Mostra versione Node.js
-        run: |
-          node --version
-          npm --version
-
       - name: Installa dipendenze progetto
         run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Allinea Playwright al container
-        run: |
-          npm install \
-            --no-save \
-            --package-lock=false \
-            playwright@1.61.0
-
-          echo "Versione Playwright:"
-          npx playwright --version
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm install --no-save --package-lock=false playwright@1.61.0
 
       - name: Cerca offerte dei supermercati selezionati
         timeout-minutes: 8
@@ -78,95 +48,30 @@ jobs:
         if: always()
         run: |
           if [ -f data/offerte.json ]; then
-            node -e "
-              const fs = require('fs');
-
-              const offerte = JSON.parse(
-                fs.readFileSync('data/offerte.json', 'utf8')
-              );
-
-              const gruppi = Object.groupBy(
-                offerte,
-                offerta => offerta.store || offerta.chain || 'Altro'
-              );
-
-              console.log('Totale offerte:', offerte.length);
-
-              for (const [catena, elementi] of Object.entries(gruppi)) {
-                const locali = elementi.filter(
-                  elemento => elemento.localValidityVerified
-                ).length;
-
-                console.log(
-                  catena + ':',
-                  elementi.length,
-                  '- locali verificati:',
-                  locali
-                );
-              }
-            "
-          else
-            echo "File data/offerte.json non trovato."
+            node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync('data/offerte.json'));const g=Object.groupBy(a,x=>x.store||x.chain||'Altro');console.log('Totale:',a.length);for(const [k,v] of Object.entries(g))console.log(k+':',v.length,'- locali verificati:',v.filter(x=>x.localValidityVerified).length);"
           fi
-
           if [ -f data/catalogo.json ]; then
-            node -e "
-              const fs = require('fs');
-
-              const catalogo = JSON.parse(
-                fs.readFileSync('data/catalogo.json', 'utf8')
-              );
-
-              console.log(
-                'Catalogo unificato:',
-                catalogo.items?.length || 0,
-                'voci'
-              );
-            "
-          else
-            echo "File data/catalogo.json non trovato."
+            node -e "const c=JSON.parse(require('fs').readFileSync('data/catalogo.json'));console.log('Catalogo unificato:',c.items?.length||0,'voci');"
           fi
-
-          echo ""
-          echo "=== Stato collegamenti locali ==="
-
-          if [ -f data/volantini-locali.json ]; then
-            cat data/volantini-locali.json
-          else
-            echo "File data/volantini-locali.json non trovato."
-          fi
+          [ -f data/volantini-locali.json ] && cat data/volantini-locali.json || true
 
       - name: Carica diagnostica Lidl
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lidl-debug-${{ github.run_number }}
+          name: lidl-viewer-debug-${{ github.run_number }}
           path: debug/lidl/
           if-no-files-found: warn
           retention-days: 14
 
       - name: Salva offerte aggiornate
         if: success()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd "$GITHUB_WORKSPACE"
-
-          echo "Cartella usata per il salvataggio:"
-          pwd
-
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git status
-
-          git add \
-            data/offerte.json \
-            data/volantini-locali.json \
-            data/catalogo.json
-
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/offerte.json data/volantini-locali.json data/catalogo.json
           if git diff --cached --quiet; then
             echo "Nessun aggiornamento da salvare."
           else
