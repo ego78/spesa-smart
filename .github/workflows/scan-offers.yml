@@ -51,3 +51,13 @@ jobs:
           git add data/offerte.json data/volantini-locali.json data/catalogo.json
           git diff --cached --quiet || git commit -m "Aggiorna offerte automatiche"
           git push
+
+
+      - name: Carica diagnostica Lidl
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lidl-debug-${{ github.run_number }}
+          path: debug/lidl/
+          if-no-files-found: warn
+          retention-days: 14
