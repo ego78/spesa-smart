@@ -1,7 +1,3 @@
-# Spesa Smart 5.0 — Motore universale
-
-Questa versione introduce un contratto unico per i connettori, catalogo di copertura, pulizia automatica delle offerte scadute, storico degli ultimi 60 aggiornamenti e inserimento rapido della lista. PENNY ed Eurospin estraggono offerte; Lidl collega automaticamente il volantino nazionale. Le altre catene restano predisposte al PDF o a futuri connettori.
-
 ## Versione 4.2.1
 
 - PENNY ed Eurospin con offerte disponibili vengono mostrati come “Volantino locale collegato”.
@@ -108,3 +104,7 @@ Il connettore PDF viene caricato solo quando esiste un volantino PDF collegato e
 - Il punto vendita Eurospin di Sava viene associato al codice ufficiale `603860`.
 - È possibile impostare un altro negozio con `officialStoreId` nei dati del supermercato oppure con il secret GitHub `EUROSPIN_STORE_CODE`.
 - Nessun OCR/OpenAI è necessario per PENNY ed Eurospin quando le API prodotto sono disponibili.
+
+
+## Versione 5.0.1
+Aggiunto catalogo prodotti unificato. Vedi `README-CATALOGO.md`.

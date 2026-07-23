@@ -432,9 +432,3 @@ button { cursor:pointer; }
     background:rgba(24,32,28,.96);
   }
 }
-/* Spesa Smart 5.0 */
-.actions{flex-wrap:wrap}.actions .btn{flex:1 1 150px}
-textarea{width:100%;box-sizing:border-box;border:1px solid var(--line,#d8dedb);border-radius:14px;padding:14px;font:inherit;resize:vertical;background:#fff}
-.connector-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px}
-.connector-card{display:flex;align-items:center;justify-content:space-between;gap:12px;background:#fff;border:1px solid #dfe6e2;border-radius:18px;padding:15px;box-shadow:0 3px 12px rgba(0,0,0,.035)}
-.connector-card div{display:flex;flex-direction:column;gap:4px}.connector-card small{color:#6c757d;line-height:1.3}.connector-card>span{font-size:.75rem;font-weight:800;padding:6px 9px;border-radius:999px;background:#eef3f0;color:#496158;white-space:nowrap}.connector-card.active{border-color:#bfe1cf}.connector-card.active>span{background:#e4f5ec;color:#146c43}.connector-card.planned{opacity:.88}
