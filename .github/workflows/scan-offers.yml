@@ -37,6 +37,7 @@ jobs:
       - name: Riepilogo offerte trovate
         run: |
           node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync('data/offerte.json'));const g=Object.groupBy(a,x=>x.store||x.chain||'Altro');console.log('Totale:',a.length);for(const [k,v] of Object.entries(g))console.log(k+':',v.length,'- locali verificati:',v.filter(x=>x.localValidityVerified).length);"
+          node -e "const c=JSON.parse(require('fs').readFileSync('data/catalogo.json'));console.log('Catalogo unificato:',c.items.length,'voci');"
           echo "Stato collegamenti locali:"
           cat data/volantini-locali.json
 
@@ -44,6 +45,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/offerte.json data/volantini-locali.json
+          git add data/offerte.json data/volantini-locali.json data/catalogo.json
           git diff --cached --quiet || git commit -m "Aggiorna offerte automatiche"
           git push
