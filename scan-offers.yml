@@ -1,0 +1,88 @@
+name: Cerca offerte automatiche
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 5 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.0-noble
+      options: --ipc=host
+
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.workspace }}
+
+    steps:
+      - name: Scarica repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Installa dipendenze progetto
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm install --no-save --package-lock=false playwright@1.61.0
+
+      - name: Ripristina cache estrazione Lidl
+        uses: actions/cache@v4
+        with:
+          path: .cache/lidl
+          key: lidl-pdf-v1-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            lidl-pdf-v1-${{ runner.os }}-
+
+      - name: Cerca offerte dei supermercati selezionati
+        timeout-minutes: 6
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          FAMILY_CODE: ${{ secrets.FAMILY_CODE }}
+          MINIMUM_MATCH_SCORE: "0.62"
+          PENNY_FLYER_ID: ${{ secrets.PENNY_FLYER_ID }}
+          LIDL_DEBUG: "true"
+          PLAYWRIGHT_BROWSERS_PATH: "/ms-playwright"
+        run: npm run scan-offers
+
+      - name: Riepilogo offerte trovate
+        if: always()
+        run: |
+          if [ -f data/offerte.json ]; then
+            node -e "const fs=require('fs');const a=JSON.parse(fs.readFileSync('data/offerte.json'));const g=Object.groupBy(a,x=>x.store||x.chain||'Altro');console.log('Totale:',a.length);for(const [k,v] of Object.entries(g))console.log(k+':',v.length,'- locali verificati:',v.filter(x=>x.localValidityVerified).length);"
+          fi
+          if [ -f data/catalogo.json ]; then
+            node -e "const c=JSON.parse(require('fs').readFileSync('data/catalogo.json'));console.log('Catalogo unificato:',c.items?.length||0,'voci');"
+          fi
+          [ -f data/volantini-locali.json ] && cat data/volantini-locali.json || true
+
+      - name: Carica diagnostica Lidl
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spesa-smart-v6.4-lidl-debug-${{ github.run_number }}
+          path: debug/lidl/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Salva offerte aggiornate
+        if: success()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/offerte.json data/volantini-locali.json data/catalogo.json
+          if git diff --cached --quiet; then
+            echo "Nessun aggiornamento da salvare."
+          else
+            git commit -m "Aggiorna offerte automatiche"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
