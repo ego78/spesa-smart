@@ -8,8 +8,22 @@ const HOME_URL = 'https://www.lidl.it/';
 const LANDING_URL = 'https://www.lidl.it/c/volantino-lidl/s10018048';
 const WIDGET_URL = 'https://endpoints.leaflets.schwarz/v4/widget?widget_id=b72c9549-b8f0-11ed-b03c-fa163e81deca&store_id=0&region_id=0';
 const CACHE_DIR = path.resolve('.cache/lidl');
-const PDF_CACHE_VERSION = 1;
+const PDF_CACHE_VERSION = 2;
 const MAX_FLYER_CONCURRENCY = 2;
+const DEBUG_ENABLED = /^(1|true|yes)$/i.test(process.env.LIDL_DEBUG || '');
+const DEBUG_FULL = /^(1|true|yes)$/i.test(process.env.LIDL_DEBUG_FULL || '');
+
+function nowMs() {
+  return Number(process.hrtime.bigint()) / 1e6;
+}
+
+function elapsedMs(start) {
+  return Math.round(nowMs() - start);
+}
+
+function sha256(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
 
 function parseItalianPrice(value = '') {
   const text = cleanText(value);
@@ -966,26 +980,25 @@ function extractPdfOffersFromLines(pages = [], flyer = {}) {
   return dedupePdfOffers(output);
 }
 
-async function readPdfCache(pdfUrl) {
-  const cacheKey = shortHash(`${PDF_CACHE_VERSION}|${pdfUrl}`);
-  const cachePath = path.join(CACHE_DIR, `${cacheKey}.json`);
+async function readPdfCacheByHash(pdfHash) {
+  const cachePath = path.join(CACHE_DIR, `sha256-${pdfHash}.json`);
   try {
     const cached = JSON.parse(await fs.readFile(cachePath, 'utf8'));
-    if (cached?.version !== PDF_CACHE_VERSION || cached?.pdfUrl !== pdfUrl || !Array.isArray(cached.pages)) return null;
+    if (cached?.version !== PDF_CACHE_VERSION || cached?.pdfHash !== pdfHash || !Array.isArray(cached.pages)) return null;
     return { ...cached, cachePath, cacheHit: true };
   } catch {
     return null;
   }
 }
 
-async function writePdfCache(pdfUrl, result) {
+async function writePdfCache(pdfUrl, pdfHash, result) {
   await fs.mkdir(CACHE_DIR, { recursive: true });
-  const cacheKey = shortHash(`${PDF_CACHE_VERSION}|${pdfUrl}`);
-  const cachePath = path.join(CACHE_DIR, `${cacheKey}.json`);
+  const cachePath = path.join(CACHE_DIR, `sha256-${pdfHash}.json`);
   await writeJson(cachePath, {
     version: PDF_CACHE_VERSION,
     generatedAt: new Date().toISOString(),
     pdfUrl,
+    pdfHash,
     bytes: result.bytes,
     pages: result.pages
   });
@@ -993,21 +1006,11 @@ async function writePdfCache(pdfUrl, result) {
 }
 
 async function extractPdfOffers(flyer) {
+  const totalStarted = nowMs();
   const pdfUrl = String(flyer?.hiResPdfUrl || flyer?.pdfUrl || '');
-  if (!pdfUrl) return { offers: [], pages: [], pdfUrl: '', bytes: 0, cacheHit: false };
+  if (!pdfUrl) return { offers: [], pages: [], pdfUrl: '', bytes: 0, cacheHit: false, timings: { totalMs: 0 } };
 
-  const cached = await readPdfCache(pdfUrl);
-  if (cached) {
-    return {
-      offers: extractPdfOffersFromLines(cached.pages, flyer),
-      pages: cached.pages,
-      pdfUrl,
-      bytes: Number(cached.bytes || 0),
-      cacheHit: true,
-      cachePath: cached.cachePath
-    };
-  }
-
+  const downloadStarted = nowMs();
   const response = await fetch(pdfUrl, {
     headers: {
       'user-agent': 'Mozilla/5.0',
@@ -1018,7 +1021,35 @@ async function extractPdfOffers(flyer) {
   if (!response.ok) throw new Error(`Lidl PDF: download fallito (${response.status})`);
 
   const data = new Uint8Array(await response.arrayBuffer());
+  const downloadMs = elapsedMs(downloadStarted);
   const byteLength = data.byteLength;
+  const hashStarted = nowMs();
+  const pdfHash = sha256(data);
+  const hashMs = elapsedMs(hashStarted);
+  const cached = await readPdfCacheByHash(pdfHash);
+
+  if (cached) {
+    const extractionStarted = nowMs();
+    const offers = extractPdfOffersFromLines(cached.pages, flyer);
+    return {
+      offers,
+      pages: cached.pages,
+      pdfUrl,
+      pdfHash,
+      bytes: Number(cached.bytes || byteLength),
+      cacheHit: true,
+      cachePath: cached.cachePath,
+      timings: {
+        downloadMs,
+        hashMs,
+        parsePdfMs: 0,
+        extractOffersMs: elapsedMs(extractionStarted),
+        totalMs: elapsedMs(totalStarted)
+      }
+    };
+  }
+
+  const parseStarted = nowMs();
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const document = await pdfjs.getDocument({ data, disableWorker: true }).promise;
   const pages = [];
@@ -1033,15 +1064,27 @@ async function extractPdfOffers(flyer) {
       rawText: cleanText(items.map(item => item.text).join(' '))
     });
   }
+  const parsePdfMs = elapsedMs(parseStarted);
+  const extractionStarted = nowMs();
+  const offers = extractPdfOffersFromLines(pages, flyer);
+  const extractOffersMs = elapsedMs(extractionStarted);
 
   const result = {
-    offers: extractPdfOffersFromLines(pages, flyer),
+    offers,
     pages,
     pdfUrl,
+    pdfHash,
     bytes: byteLength,
-    cacheHit: false
+    cacheHit: false,
+    timings: {
+      downloadMs,
+      hashMs,
+      parsePdfMs,
+      extractOffersMs,
+      totalMs: elapsedMs(totalStarted)
+    }
   };
-  result.cachePath = await writePdfCache(pdfUrl, result);
+  result.cachePath = await writePdfCache(pdfUrl, pdfHash, result);
   return result;
 }
 
@@ -1276,7 +1319,8 @@ function shortHash(value = '') {
 
 async function prepareDebugDirectory() {
   await fs.rm(DEBUG_DIR, { recursive: true, force: true });
-  await fs.mkdir(path.join(DEBUG_DIR, 'responses'), { recursive: true });
+  await fs.mkdir(DEBUG_DIR, { recursive: true });
+  if (DEBUG_FULL) await fs.mkdir(path.join(DEBUG_DIR, 'responses'), { recursive: true });
 }
 
 async function writeJson(filePath, value) {
@@ -1405,8 +1449,10 @@ async function attachNetworkDebug(page, debugState) {
       }
 
       const fileName = `${String(debugState.jsonResponses.length + 1).padStart(3, '0')}-${safeFileName(url)}-${shortHash(url)}.json`;
-      const filePath = path.join(DEBUG_DIR, 'responses', fileName);
-      await writeJson(filePath, parsed);
+      if (DEBUG_FULL) {
+        const filePath = path.join(DEBUG_DIR, 'responses', fileName);
+        await writeJson(filePath, parsed);
+      }
 
       const summary = summarizeJson(parsed);
       const responseInfo = {
@@ -1416,7 +1462,7 @@ async function attachNetworkDebug(page, debugState) {
         resourceType: request.resourceType(),
         contentType,
         bodyBytes: entry.bodyBytes,
-        file: `responses/${fileName}`,
+        file: DEBUG_FULL ? `responses/${fileName}` : '',
         interesting: isInterestingJson(url, body),
         summary
       };
@@ -1431,11 +1477,13 @@ async function attachNetworkDebug(page, debugState) {
 async function saveDebugArtifacts(page, debugState, details = {}) {
   try {
     await fs.mkdir(DEBUG_DIR, { recursive: true });
-    await fs.writeFile(path.join(DEBUG_DIR, 'page.html'), await page.content(), 'utf8');
-    await page.screenshot({
-      path: path.join(DEBUG_DIR, 'final-page.png'),
-      fullPage: true
-    });
+    if (DEBUG_FULL) {
+      await fs.writeFile(path.join(DEBUG_DIR, 'page.html'), await page.content(), 'utf8');
+      await page.screenshot({
+        path: path.join(DEBUG_DIR, 'final-page.png'),
+        fullPage: true
+      });
+    }
   } catch (error) {
     debugState.artifactErrors.push(error.message);
   }
@@ -1467,14 +1515,19 @@ async function saveDebugArtifacts(page, debugState, details = {}) {
     topJsonCandidates: interestingResponses.slice(0, 30)
   };
 
-  await Promise.all([
-    writeJson(path.join(DEBUG_DIR, 'network.json'), debugState.network),
-    writeJson(path.join(DEBUG_DIR, 'json-index.json'), debugState.jsonResponses),
-    writeJson(path.join(DEBUG_DIR, 'console.json'), debugState.console),
+  const writes = [
+    writeJson(path.join(DEBUG_DIR, 'report.json'), report),
     writeJson(path.join(DEBUG_DIR, 'page-errors.json'), debugState.pageErrors),
-    writeJson(path.join(DEBUG_DIR, 'failed-requests.json'), debugState.failedRequests),
-    writeJson(path.join(DEBUG_DIR, 'report.json'), report)
-  ]);
+    writeJson(path.join(DEBUG_DIR, 'failed-requests.json'), debugState.failedRequests.slice(0, 200))
+  ];
+  if (DEBUG_FULL) {
+    writes.push(
+      writeJson(path.join(DEBUG_DIR, 'network.json'), debugState.network),
+      writeJson(path.join(DEBUG_DIR, 'json-index.json'), debugState.jsonResponses),
+      writeJson(path.join(DEBUG_DIR, 'console.json'), debugState.console)
+    );
+  }
+  await Promise.all(writes);
 
   const textReport = [
     'SPESA SMART — DEBUG LIDL',
@@ -1505,6 +1558,8 @@ async function saveDebugArtifacts(page, debugState, details = {}) {
 }
 
 export async function scanLidlOffers(store = {}) {
+  const scanStarted = nowMs();
+  const phaseTimings = {};
   const { chromium } = await import('playwright');
   const context = await resolveLidlFlyer(store);
   await prepareDebugDirectory();
@@ -1528,18 +1583,22 @@ export async function scanLidlOffers(store = {}) {
       timezoneId: 'Europe/Rome',
       viewport: { width: 1440, height: 1100 },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-      recordHar: {
-        path: path.join(DEBUG_DIR, 'lidl-session.har'),
-        mode: 'full',
-        content: 'embed'
-      }
+      ...(DEBUG_FULL ? {
+        recordHar: {
+          path: path.join(DEBUG_DIR, 'lidl-session.har'),
+          mode: 'minimal',
+          content: 'omit'
+        }
+      } : {})
     });
 
     page = await browserContext.newPage();
     await attachNetworkDebug(page, debugState);
 
+    const discoveryStarted = nowMs();
     const offersUrl = await findOffersUrl(page);
     const discovery = await resolveViewerFlyers(page);
+    phaseTimings.discoveryMs = elapsedMs(discoveryStarted);
     const viewerFlyers = discovery.flyers;
     await writeJson(path.join(DEBUG_DIR, 'cards.json'), discovery.landingCards);
     await writeJson(path.join(DEBUG_DIR, 'flyers.json'), viewerFlyers);
@@ -1558,6 +1617,7 @@ export async function scanLidlOffers(store = {}) {
     }
 
     // Prima apre la pagina offerte: mantiene le card già funzionanti.
+    const offersPageStarted = nowMs();
     let pageCards = [];
     if (offersUrl) {
       await page.goto(offersUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -1568,6 +1628,7 @@ export async function scanLidlOffers(store = {}) {
       }
       pageCards = await extractCards(page);
     }
+    phaseTimings.offersPageMs = elapsedMs(offersPageStarted);
 
     // Elabora i volantini in parallelo (massimo due alla volta). Il PDF resta
     // la sorgente primaria; il viewer viene usato soltanto quando manca il PDF.
@@ -1575,7 +1636,8 @@ export async function scanLidlOffers(store = {}) {
       const viewerUrl = flyerEntry.url;
       const canonicalUrl = canonicalFlyerUrl(viewerUrl) || viewerUrl;
       let flyerViewerCards = [];
-      let pdfResult = { offers: [], pages: [], pdfUrl: '', bytes: 0, cacheHit: false };
+      const flyerStarted = nowMs();
+      let pdfResult = { offers: [], pages: [], pdfUrl: '', bytes: 0, cacheHit: false, timings: {} };
 
       try {
         const flyerMetadata = await fetchFlyerMetadata(page, canonicalUrl);
@@ -1586,10 +1648,12 @@ export async function scanLidlOffers(store = {}) {
             flyerLabel: flyerEntry.label,
             viewerUrl: canonicalUrl,
             pdfUrl: pdfResult.pdfUrl,
+            pdfHash: pdfResult.pdfHash || '',
             bytes: pdfResult.bytes,
             cacheHit: pdfResult.cacheHit,
             cachePath: pdfResult.cachePath || '',
-            pages: pdfResult.pages.map(item => ({ number: item.number, lines: item.lines, rawText: item.rawText })),
+            timings: pdfResult.timings || {},
+            pages: DEBUG_FULL ? pdfResult.pages.map(item => ({ number: item.number, lines: item.lines, rawText: item.rawText })) : pdfResult.pages.map(item => ({ number: item.number, lineCount: item.lines?.length || 0 })),
             offers: pdfResult.offers
           });
         } else {
@@ -1618,6 +1682,7 @@ export async function scanLidlOffers(store = {}) {
             viewerCards: flyerViewerCards.length,
             pdfCards: pdfResult.offers.length,
             cacheHit: Boolean(pdfResult.cacheHit),
+            timings: { ...(pdfResult.timings || {}), flyerTotalMs: elapsedMs(flyerStarted) },
             status: 'ok'
           }
         };
@@ -1634,6 +1699,7 @@ export async function scanLidlOffers(store = {}) {
             viewerCards: flyerViewerCards.length,
             pdfCards: 0,
             cacheHit: false,
+            timings: { flyerTotalMs: elapsedMs(flyerStarted) },
             status: 'error',
             error: flyerError.message
           }
@@ -1641,12 +1707,14 @@ export async function scanLidlOffers(store = {}) {
       }
     });
 
+    const flyersStarted = nowMs();
     const flyerResults = [];
     for (let offset = 0; offset < flyerJobs.length; offset += MAX_FLYER_CONCURRENCY) {
       const batch = flyerJobs.slice(offset, offset + MAX_FLYER_CONCURRENCY);
       flyerResults.push(...await Promise.all(batch.map(job => job())));
     }
     flyerResults.sort((a, b) => a.index - b.index);
+    phaseTimings.flyersMs = elapsedMs(flyersStarted);
 
     const viewerCards = flyerResults.flatMap(item => item.viewerCards);
     const pdfOffers = flyerResults.flatMap(item => item.offers);
@@ -1664,6 +1732,7 @@ export async function scanLidlOffers(store = {}) {
       processedFlyers
     });
 
+    const normalizationStarted = nowMs();
     const rawCards = [...pageCards, ...viewerCards, ...pdfOffers];
     const offers = uniqueOffers(
       rawCards
@@ -1673,7 +1742,10 @@ export async function scanLidlOffers(store = {}) {
         .filter(Boolean)
     );
 
+    phaseTimings.normalizeMs = elapsedMs(normalizationStarted);
+    const comparisonStarted = nowMs();
     const offerChanges = await compareWithPreviousLidlOffers(offers);
+    phaseTimings.compareMs = elapsedMs(comparisonStarted);
     await writeJson(path.join(DEBUG_DIR, 'offers-change-summary.json'), offerChanges);
 
     details = {
@@ -1700,7 +1772,9 @@ export async function scanLidlOffers(store = {}) {
       flyerUrl: context.flyerUrl || '',
       flyerId: context.flyerId || '',
       storeId: String(store.id || ''),
-      storeName: store.name || store.brand || 'Lidl'
+      storeName: store.name || store.brand || 'Lidl',
+      timings: { ...phaseTimings, totalMs: elapsedMs(scanStarted) },
+      debugMode: DEBUG_FULL ? 'full' : (DEBUG_ENABLED ? 'compact' : 'minimal')
     };
 
     await saveDebugArtifacts(page, debugState, details);
