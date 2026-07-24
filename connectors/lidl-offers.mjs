@@ -7,6 +7,9 @@ import { resolveLidlFlyer } from './lidl-local.mjs';
 const HOME_URL = 'https://www.lidl.it/';
 const LANDING_URL = 'https://www.lidl.it/c/volantino-lidl/s10018048';
 const WIDGET_URL = 'https://endpoints.leaflets.schwarz/v4/widget?widget_id=b72c9549-b8f0-11ed-b03c-fa163e81deca&store_id=0&region_id=0';
+const CACHE_DIR = path.resolve('.cache/lidl');
+const PDF_CACHE_VERSION = 1;
+const MAX_FLYER_CONCURRENCY = 2;
 
 function parseItalianPrice(value = '') {
   const text = cleanText(value);
@@ -963,16 +966,54 @@ function extractPdfOffersFromLines(pages = [], flyer = {}) {
   return dedupePdfOffers(output);
 }
 
+async function readPdfCache(pdfUrl) {
+  const cacheKey = shortHash(`${PDF_CACHE_VERSION}|${pdfUrl}`);
+  const cachePath = path.join(CACHE_DIR, `${cacheKey}.json`);
+  try {
+    const cached = JSON.parse(await fs.readFile(cachePath, 'utf8'));
+    if (cached?.version !== PDF_CACHE_VERSION || cached?.pdfUrl !== pdfUrl || !Array.isArray(cached.pages)) return null;
+    return { ...cached, cachePath, cacheHit: true };
+  } catch {
+    return null;
+  }
+}
+
+async function writePdfCache(pdfUrl, result) {
+  await fs.mkdir(CACHE_DIR, { recursive: true });
+  const cacheKey = shortHash(`${PDF_CACHE_VERSION}|${pdfUrl}`);
+  const cachePath = path.join(CACHE_DIR, `${cacheKey}.json`);
+  await writeJson(cachePath, {
+    version: PDF_CACHE_VERSION,
+    generatedAt: new Date().toISOString(),
+    pdfUrl,
+    bytes: result.bytes,
+    pages: result.pages
+  });
+  return cachePath;
+}
+
 async function extractPdfOffers(flyer) {
   const pdfUrl = String(flyer?.hiResPdfUrl || flyer?.pdfUrl || '');
-  if (!pdfUrl) return { offers: [], pages: [], pdfUrl: '' };
+  if (!pdfUrl) return { offers: [], pages: [], pdfUrl: '', bytes: 0, cacheHit: false };
+
+  const cached = await readPdfCache(pdfUrl);
+  if (cached) {
+    return {
+      offers: extractPdfOffersFromLines(cached.pages, flyer),
+      pages: cached.pages,
+      pdfUrl,
+      bytes: Number(cached.bytes || 0),
+      cacheHit: true,
+      cachePath: cached.cachePath
+    };
+  }
 
   const response = await fetch(pdfUrl, {
     headers: {
       'user-agent': 'Mozilla/5.0',
       accept: 'application/pdf,*/*'
     },
-    signal: AbortSignal.timeout(90000)
+    signal: AbortSignal.timeout(60000)
   });
   if (!response.ok) throw new Error(`Lidl PDF: download fallito (${response.status})`);
 
@@ -993,11 +1034,62 @@ async function extractPdfOffers(flyer) {
     });
   }
 
-  return {
+  const result = {
     offers: extractPdfOffersFromLines(pages, flyer),
     pages,
     pdfUrl,
-    bytes: byteLength
+    bytes: byteLength,
+    cacheHit: false
+  };
+  result.cachePath = await writePdfCache(pdfUrl, result);
+  return result;
+}
+
+function offerComparisonKey(offer = {}) {
+  return cleanText(`${offer.chain || offer.store || ''}|${offer.product || offer.title || ''}|${offer.format || ''}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9àèéìòù|]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function compareWithPreviousLidlOffers(currentOffers = []) {
+  let previous = [];
+  try {
+    const payload = JSON.parse(await fs.readFile(path.resolve('data/offerte.json'), 'utf8'));
+    previous = (Array.isArray(payload) ? payload : payload?.items || [])
+      .filter(item => /lidl/i.test(String(item.chain || item.store || '')));
+  } catch {
+    // Primo avvio o archivio non ancora presente.
+  }
+
+  const previousMap = new Map(previous.map(item => [offerComparisonKey(item), item]).filter(([key]) => key));
+  const currentMap = new Map(currentOffers.map(item => [offerComparisonKey(item), item]).filter(([key]) => key));
+  const added = [];
+  const removed = [];
+  const priceChanged = [];
+
+  for (const [key, item] of currentMap) {
+    const old = previousMap.get(key);
+    if (!old) added.push(item);
+    else if (Number(old.price) !== Number(item.price)) {
+      priceChanged.push({ key, product: item.product, format: item.format, oldPrice: Number(old.price), newPrice: Number(item.price) });
+    }
+  }
+  for (const [key, item] of previousMap) {
+    if (!currentMap.has(key)) removed.push(item);
+  }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    previousCount: previous.length,
+    currentCount: currentOffers.length,
+    addedCount: added.length,
+    removedCount: removed.length,
+    priceChangedCount: priceChanged.length,
+    added,
+    removed,
+    priceChanged
   };
 }
 
@@ -1477,74 +1569,88 @@ export async function scanLidlOffers(store = {}) {
       pageCards = await extractCards(page);
     }
 
-    // Elabora tutti i volantini settimanali e speciali. Sono esclusi soltanto
-    // i volantini Lidl Viaggi.
-    let viewerCards = [];
-    let pdfOffers = [];
-    const processedFlyers = [];
-
-    for (const flyerEntry of viewerFlyers) {
+    // Elabora i volantini in parallelo (massimo due alla volta). Il PDF resta
+    // la sorgente primaria; il viewer viene usato soltanto quando manca il PDF.
+    const flyerJobs = viewerFlyers.map((flyerEntry, index) => async () => {
       const viewerUrl = flyerEntry.url;
-      let flyerMetadata = null;
+      const canonicalUrl = canonicalFlyerUrl(viewerUrl) || viewerUrl;
       let flyerViewerCards = [];
-      let pdfResult = { offers: [], pages: [], pdfUrl: '', bytes: 0 };
+      let pdfResult = { offers: [], pages: [], pdfUrl: '', bytes: 0, cacheHit: false };
 
       try {
-        const canonicalUrl = canonicalFlyerUrl(viewerUrl) || viewerUrl;
-        flyerMetadata = await fetchFlyerMetadata(page, canonicalUrl);
-
-        // Il PDF è la sorgente che nei log produce realmente le offerte Lidl.
-        // Quando è disponibile, evitiamo di aprire e sfogliare inutilmente il viewer.
+        const flyerMetadata = await fetchFlyerMetadata(page, canonicalUrl);
         if (flyerMetadata?.hiResPdfUrl || flyerMetadata?.pdfUrl) {
           pdfResult = await extractPdfOffers(flyerMetadata);
-          pdfOffers.push(...pdfResult.offers);
-
-          const safeIndex = String(processedFlyers.length + 1).padStart(2, '0');
+          const safeIndex = String(index + 1).padStart(2, '0');
           await writeJson(path.join(DEBUG_DIR, `pdf-extraction-${safeIndex}.json`), {
             flyerLabel: flyerEntry.label,
             viewerUrl: canonicalUrl,
             pdfUrl: pdfResult.pdfUrl,
             bytes: pdfResult.bytes,
-            pages: pdfResult.pages.map(item => ({
-              number: item.number,
-              lines: item.lines,
-              rawText: item.rawText
-            })),
+            cacheHit: pdfResult.cacheHit,
+            cachePath: pdfResult.cachePath || '',
+            pages: pdfResult.pages.map(item => ({ number: item.number, lines: item.lines, rawText: item.rawText })),
             offers: pdfResult.offers
           });
         } else {
-          // Fallback soltanto per eventuali volantini privi di PDF.
-          await page.goto(canonicalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-          await dismissConsent(page);
-          await page.waitForTimeout(1200);
-          flyerViewerCards = await extractViewerCards(page);
-          viewerCards.push(...flyerViewerCards);
+          const fallbackPage = await browserContext.newPage();
+          try {
+            await fallbackPage.goto(canonicalUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+            await dismissConsent(fallbackPage);
+            await fallbackPage.waitForTimeout(800);
+            flyerViewerCards = await extractViewerCards(fallbackPage);
+          } finally {
+            await fallbackPage.close().catch(() => {});
+          }
         }
 
-        processedFlyers.push({
-          label: flyerEntry.label,
-          viewerUrl: canonicalUrl,
-          flyerIdentifier: flyerIdentifierFromUrl(canonicalUrl),
-          pdfUrl: pdfResult.pdfUrl,
-          pdfBytes: pdfResult.bytes,
-          pdfPages: pdfResult.pages.length,
-          viewerCards: flyerViewerCards.length,
-          pdfCards: pdfResult.offers.length,
-          status: 'ok'
-        });
+        return {
+          index,
+          offers: pdfResult.offers,
+          viewerCards: flyerViewerCards,
+          summary: {
+            label: flyerEntry.label,
+            viewerUrl: canonicalUrl,
+            flyerIdentifier: flyerIdentifierFromUrl(canonicalUrl),
+            pdfUrl: pdfResult.pdfUrl,
+            pdfBytes: pdfResult.bytes,
+            pdfPages: pdfResult.pages.length,
+            viewerCards: flyerViewerCards.length,
+            pdfCards: pdfResult.offers.length,
+            cacheHit: Boolean(pdfResult.cacheHit),
+            status: 'ok'
+          }
+        };
       } catch (flyerError) {
         debugState.artifactErrors.push(`Volantino ${flyerEntry.label}: ${flyerError.message}`);
-        processedFlyers.push({
-          label: flyerEntry.label,
-          viewerUrl,
-          flyerIdentifier: flyerIdentifierFromUrl(viewerUrl),
-          viewerCards: flyerViewerCards.length,
-          pdfCards: 0,
-          status: 'error',
-          error: flyerError.message
-        });
+        return {
+          index,
+          offers: [],
+          viewerCards: flyerViewerCards,
+          summary: {
+            label: flyerEntry.label,
+            viewerUrl: canonicalUrl,
+            flyerIdentifier: flyerIdentifierFromUrl(canonicalUrl),
+            viewerCards: flyerViewerCards.length,
+            pdfCards: 0,
+            cacheHit: false,
+            status: 'error',
+            error: flyerError.message
+          }
+        };
       }
+    });
+
+    const flyerResults = [];
+    for (let offset = 0; offset < flyerJobs.length; offset += MAX_FLYER_CONCURRENCY) {
+      const batch = flyerJobs.slice(offset, offset + MAX_FLYER_CONCURRENCY);
+      flyerResults.push(...await Promise.all(batch.map(job => job())));
     }
+    flyerResults.sort((a, b) => a.index - b.index);
+
+    const viewerCards = flyerResults.flatMap(item => item.viewerCards);
+    const pdfOffers = flyerResults.flatMap(item => item.offers);
+    const processedFlyers = flyerResults.map(item => item.summary);
 
     await writeJson(path.join(DEBUG_DIR, 'flyers-summary.json'), {
       generatedAt: new Date().toISOString(),
@@ -1567,6 +1673,9 @@ export async function scanLidlOffers(store = {}) {
         .filter(Boolean)
     );
 
+    const offerChanges = await compareWithPreviousLidlOffers(offers);
+    await writeJson(path.join(DEBUG_DIR, 'offers-change-summary.json'), offerChanges);
+
     details = {
       offersUrl,
       viewerUrls: viewerFlyers.map(item => item.url),
@@ -1579,6 +1688,13 @@ export async function scanLidlOffers(store = {}) {
       pdfPages: processedFlyers.reduce((sum, item) => sum + Number(item.pdfPages || 0), 0),
       pdfUrls: processedFlyers.map(item => item.pdfUrl).filter(Boolean),
       pdfBytes: processedFlyers.reduce((sum, item) => sum + Number(item.pdfBytes || 0), 0),
+      pdfCacheHits: processedFlyers.filter(item => item.cacheHit).length,
+      offerChanges: {
+        previousCount: offerChanges.previousCount,
+        added: offerChanges.addedCount,
+        removed: offerChanges.removedCount,
+        priceChanged: offerChanges.priceChangedCount
+      },
       rawCards: rawCards.length,
       validOffers: offers.length,
       flyerUrl: context.flyerUrl || '',
