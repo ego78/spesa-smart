@@ -171,9 +171,15 @@ function isIncludedFlyer(item = {}) {
 function canonicalFlyerUrl(value = '') {
   try {
     const url = new URL(String(value || ''), LANDING_URL);
-    if (!/\/l\/it\/volantini\//i.test(url.pathname)) return '';
-    url.hash = '';
-    return url.toString();
+    const match = url.pathname.match(/\/l\/it\/volantini\/([^/]+)(?:\/ar\/\d+|\/view\/flyer\/page\/\d+)?/i);
+    if (!match) return '';
+
+    const identifier = decodeURIComponent(match[1]);
+    if (!identifier) return '';
+
+    // Tutti i formati del viewer vengono ricondotti all'URL stabile /ar/0.
+    // In questo modo metadata, PDF e deduplicazione lavorano sullo stesso ID.
+    return `https://www.lidl.it/l/it/volantini/${encodeURIComponent(identifier)}/ar/0`;
   } catch {
     return '';
   }
@@ -226,13 +232,19 @@ function dedupeFlyers(items = []) {
     const identifier = flyerIdentifierFromUrl(url);
     const key = identifier || url.replace(/\/$/, '');
     const previous = map.get(key) || {};
+    const sources = [...new Set(
+      [previous.source, item.source]
+        .flatMap(value => String(value || '').split(','))
+        .map(value => cleanText(value))
+        .filter(Boolean)
+    )];
     map.set(key, {
       ...previous,
       ...item,
       url,
       label: flyerLabel(item) || previous.label || 'Volantino Lidl',
       category: cleanText(item.category || previous.category || ''),
-      source: cleanText([previous.source, item.source].filter(Boolean).join(','))
+      source: sources.join(',')
     });
   }
   return [...map.values()];
@@ -555,8 +567,25 @@ async function resolveViewerFlyers(page) {
     cardsAnalysis = await analyzeLandingCardContainers(page);
     frameAnalysis = await inspectFramesForFlyers(page);
 
+    // Le card con href diretto non richiedono alcun click. Clicchiamo solo
+    // controlli compatti e plausibili (es. il pulsante del volantino settimanale),
+    // evitando header, body e contenitori generici che rallentavano la scansione.
+    const clickCandidates = cardsAnalysis.containers
+      .filter(card => {
+        const directUrls = [card.attributes?.href, ...(card.directFlyerUrls || [])]
+          .map(canonicalFlyerUrl)
+          .filter(Boolean);
+        const text = cleanText(`${card.text || ''} ${card.imageAlt || ''}`);
+        const tag = String(card.tag || '').toUpperCase();
+        if (directUrls.length || isTravelFlyer({ title: text })) return false;
+        if (!['BUTTON', 'A'].includes(tag)) return false;
+        if (!text || text.length > 500) return false;
+        return /volantino|offerte valide|offerte.*settimana|scopri di più/i.test(text);
+      })
+      .slice(0, 8);
+
     clickPhase = true;
-    for (const card of cardsAnalysis.containers.slice(0, 40)) {
+    for (const card of clickCandidates) {
       cardClickResults.push(await clickCardWithMethods(page, card, popupLog));
     }
     clickPhase = false;
@@ -564,9 +593,17 @@ async function resolveViewerFlyers(page) {
     page.off('response', responseListener);
   }
 
-  const directCards = (cardsAnalysis?.containers || []).flatMap(card =>
-    (card.directFlyerUrls || []).map(url => ({ title: card.text || card.imageAlt, category: card.section, url, source: 'card-container' }))
-  );
+  const directCards = (cardsAnalysis?.containers || []).flatMap(card => {
+    const urls = [card.attributes?.href, ...(card.directFlyerUrls || [])]
+      .map(canonicalFlyerUrl)
+      .filter(Boolean);
+    return [...new Set(urls)].map(url => ({
+      title: card.text || card.imageAlt,
+      category: card.section,
+      url,
+      source: 'card-container'
+    }));
+  });
   const clickedCards = cardClickResults.flatMap(result => result.discovered || []);
   const frameFlyers = frameAnalysis.flatMap(frame => (frame.flyerUrls || []).map(url => ({ title: frame.title, url, source: 'iframe' })));
 
@@ -686,8 +723,8 @@ async function extractViewerCards(page) {
 
 function flyerIdentifierFromUrl(viewerUrl = '') {
   try {
-    const pathname = new URL(viewerUrl).pathname;
-    const match = pathname.match(/\/volantini\/([^/]+)\/ar\/\d+/i);
+    const pathname = new URL(viewerUrl, LANDING_URL).pathname;
+    const match = pathname.match(/\/volantini\/([^/]+)(?:\/ar\/\d+|\/view\/flyer\/page\/\d+)?/i);
     return match ? decodeURIComponent(match[1]) : '';
   } catch {
     return '';
@@ -1453,13 +1490,11 @@ export async function scanLidlOffers(store = {}) {
       let pdfResult = { offers: [], pages: [], pdfUrl: '', bytes: 0 };
 
       try {
-        flyerMetadata = await fetchFlyerMetadata(page, viewerUrl);
-        await page.goto(viewerUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await dismissConsent(page);
-        await interactWithViewer(page);
-        flyerViewerCards = await extractViewerCards(page);
-        viewerCards.push(...flyerViewerCards);
+        const canonicalUrl = canonicalFlyerUrl(viewerUrl) || viewerUrl;
+        flyerMetadata = await fetchFlyerMetadata(page, canonicalUrl);
 
+        // Il PDF è la sorgente che nei log produce realmente le offerte Lidl.
+        // Quando è disponibile, evitiamo di aprire e sfogliare inutilmente il viewer.
         if (flyerMetadata?.hiResPdfUrl || flyerMetadata?.pdfUrl) {
           pdfResult = await extractPdfOffers(flyerMetadata);
           pdfOffers.push(...pdfResult.offers);
@@ -1467,7 +1502,7 @@ export async function scanLidlOffers(store = {}) {
           const safeIndex = String(processedFlyers.length + 1).padStart(2, '0');
           await writeJson(path.join(DEBUG_DIR, `pdf-extraction-${safeIndex}.json`), {
             flyerLabel: flyerEntry.label,
-            viewerUrl,
+            viewerUrl: canonicalUrl,
             pdfUrl: pdfResult.pdfUrl,
             bytes: pdfResult.bytes,
             pages: pdfResult.pages.map(item => ({
@@ -1477,12 +1512,19 @@ export async function scanLidlOffers(store = {}) {
             })),
             offers: pdfResult.offers
           });
+        } else {
+          // Fallback soltanto per eventuali volantini privi di PDF.
+          await page.goto(canonicalUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          await dismissConsent(page);
+          await page.waitForTimeout(1200);
+          flyerViewerCards = await extractViewerCards(page);
+          viewerCards.push(...flyerViewerCards);
         }
 
         processedFlyers.push({
           label: flyerEntry.label,
-          viewerUrl,
-          flyerIdentifier: flyerIdentifierFromUrl(viewerUrl),
+          viewerUrl: canonicalUrl,
+          flyerIdentifier: flyerIdentifierFromUrl(canonicalUrl),
           pdfUrl: pdfResult.pdfUrl,
           pdfBytes: pdfResult.bytes,
           pdfPages: pdfResult.pages.length,
