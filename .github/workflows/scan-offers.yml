@@ -68,7 +68,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: spesa-smart-v6.5-lidl-debug-${{ github.run_number }}
+          name: spesa-smart-v6.6-lidl-debug-${{ github.run_number }}
           path: debug/lidl/
           if-no-files-found: warn
           retention-days: 14
