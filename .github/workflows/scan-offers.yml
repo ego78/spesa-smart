@@ -33,8 +33,16 @@ jobs:
           if [ -f package-lock.json ]; then npm ci; else npm install; fi
           npm install --no-save --package-lock=false playwright@1.61.0
 
+      - name: Ripristina cache estrazione Lidl
+        uses: actions/cache@v4
+        with:
+          path: .cache/lidl
+          key: lidl-pdf-v1-${{ runner.os }}-${{ hashFiles('package-lock.json', 'package.json') }}
+          restore-keys: |
+            lidl-pdf-v1-${{ runner.os }}-
+
       - name: Cerca offerte dei supermercati selezionati
-        timeout-minutes: 8
+        timeout-minutes: 6
         env:
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
           FAMILY_CODE: ${{ secrets.FAMILY_CODE }}
@@ -59,7 +67,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: spesa-smart-v6.3-lidl-debug-${{ github.run_number }}
+          name: spesa-smart-v6.4-lidl-debug-${{ github.run_number }}
           path: debug/lidl/
           if-no-files-found: warn
           retention-days: 14
