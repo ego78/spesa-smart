@@ -34,7 +34,7 @@ jobs:
           npm install --no-save --package-lock=false playwright@1.61.0
 
       - name: Cerca offerte dei supermercati selezionati
-        timeout-minutes: 12
+        timeout-minutes: 8
         env:
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
           FAMILY_CODE: ${{ secrets.FAMILY_CODE }}
@@ -59,7 +59,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: spesa-smart-v6.2-lidl-debug-${{ github.run_number }}
+          name: spesa-smart-v6.3-lidl-debug-${{ github.run_number }}
           path: debug/lidl/
           if-no-files-found: warn
           retention-days: 14
