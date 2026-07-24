@@ -175,14 +175,20 @@ function isTravelFlyer(item = {}) {
   return /(?:lidl\s*)?viaggi|vacanze|tour|hotel|villaggi|crociere|voli|travel/i.test(flyerLabel(item));
 }
 
+function isTargetFlyerSection(value = '') {
+  return /volantini?\s+(?:settimanali?|speciali?)/i.test(cleanText(value));
+}
+
 function isIncludedFlyer(item = {}) {
   const url = String(item?.url || '');
   if (!url || isTravelFlyer(item)) return false;
 
-  // Include sia il volantino settimanale sia tutti i volantini speciali.
-  // Lidl può cambiare i nomi delle sezioni, quindi escludiamo esplicitamente
-  // soltanto i volantini Viaggi invece di usare un filtro troppo restrittivo.
-  return true;
+  // La pagina contiene tre gruppi distinti. Spesa Smart deve elaborare
+  // esclusivamente le card appartenenti a “Volantini settimanali” e
+  // “Volantini speciali”, senza scartare uno speciale perché non contiene
+  // prezzi o perché il titolo non include la parola “offerte”.
+  const section = cleanText(item.category || item.section || item.group || '');
+  return !section || isTargetFlyerSection(section);
 }
 
 function canonicalFlyerUrl(value = '') {
@@ -594,12 +600,17 @@ async function resolveViewerFlyers(page) {
           .filter(Boolean);
         const text = cleanText(`${card.text || ''} ${card.imageAlt || ''}`);
         const tag = String(card.tag || '').toUpperCase();
-        if (directUrls.length || isTravelFlyer({ title: text })) return false;
+        const targetSection = isTargetFlyerSection(card.section);
+        if (!targetSection || directUrls.length || isTravelFlyer({ title: text })) return false;
         if (!['BUTTON', 'A'].includes(tag)) return false;
-        if (!text || text.length > 500) return false;
-        return /volantino|offerte valide|offerte.*settimana|scopri di più/i.test(text);
+        if (!text || text.length > 700) return false;
+
+        // Clicchiamo tutte le card delle due sezioni richieste, compresi
+        // speciali come “I prodotti per la tua estate” che non contengono
+        // necessariamente le parole “volantino” o “offerte”.
+        return true;
       })
-      .slice(0, 8);
+      .slice(0, 20);
 
     clickPhase = true;
     for (const card of clickCandidates) {
@@ -611,6 +622,7 @@ async function resolveViewerFlyers(page) {
   }
 
   const directCards = (cardsAnalysis?.containers || []).flatMap(card => {
+    if (!isTargetFlyerSection(card.section)) return [];
     const urls = [card.attributes?.href, ...(card.directFlyerUrls || [])]
       .map(canonicalFlyerUrl)
       .filter(Boolean);
@@ -621,7 +633,8 @@ async function resolveViewerFlyers(page) {
       source: 'card-container'
     }));
   });
-  const clickedCards = cardClickResults.flatMap(result => result.discovered || []);
+  const clickedCards = cardClickResults.flatMap(result => result.discovered || [])
+    .filter(item => isTargetFlyerSection(item.category));
   const frameFlyers = frameAnalysis.flatMap(frame => (frame.flyerUrls || []).map(url => ({ title: frame.title, url, source: 'iframe' })));
 
   let widgetFlyers = [];
@@ -630,7 +643,13 @@ async function resolveViewerFlyers(page) {
     if (response.ok()) widgetFlyers = collectFlyersFromPayload(await response.json(), 'widget-fallback');
   } catch {}
 
-  const flyers = dedupeFlyers([...directCards, ...clickedCards, ...frameFlyers, ...networkFlyers, ...widgetFlyers])
+  // La fonte primaria è la struttura visibile della pagina: in questo modo
+  // vengono presi tutti e soli i volantini delle sezioni settimanali e
+  // speciali. Rete, iframe e widget restano un fallback esclusivamente se
+  // Lidl cambia il markup e nessuna card della pagina viene risolta.
+  const pageFlyers = dedupeFlyers([...directCards, ...clickedCards]);
+  const fallbackFlyers = dedupeFlyers([...frameFlyers, ...networkFlyers, ...widgetFlyers]);
+  const flyers = (pageFlyers.length ? pageFlyers : fallbackFlyers)
     .map((item, index) => ({ ...item, index }));
 
   await Promise.all([
@@ -1728,7 +1747,8 @@ export async function scanLidlOffers(store = {}) {
       clickedCards: discovery.clickedCards.length,
       networkFlyers: discovery.networkFlyers.length,
       widgetFlyers: discovery.widgetFlyers.length,
-      excludedRule: 'Lidl Viaggi / vacanze / travel',
+      includedRule: 'solo sezioni Volantini settimanali e Volantini speciali',
+      excludedRule: 'Volantini Lidl Viaggi e qualsiasi altra sezione',
       processedFlyers
     });
 
